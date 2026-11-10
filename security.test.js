@@ -231,6 +231,103 @@ class Client {
     r = await E.req('GET', "/api/reports?months=1;DROP&type=' OR 1=1");
     rec('אימות טפסים בשרת', 'פרמטרים לא תקינים בדוחות מוחלפים בברירת מחדל', r.status === 200 && r.data.months === 12 && r.data.type === null);
 
+    // ---------- זכור אותי ----------
+    {
+      const rp = pw();
+      await admin.req('POST', '/api/admin/users', { username: 'remem', full_name: 'זכור', role_id: roleId('מבקש / יזם'), password: rp });
+      const rid2 = db.prepare("SELECT id FROM users WHERE username='remem'").get().id;
+      db.prepare('UPDATE users SET must_change_pw = 0 WHERE id = ?').run(rid2);
+      const c1 = new Client(base); const l1 = await c1.req('POST', '/api/auth/login', { username: 'remem', password: rp, remember: true }); c1.csrf = l1.data.csrf;
+      const c2 = new Client(base); const l2 = await c2.req('POST', '/api/auth/login', { username: 'remem', password: rp });
+      const k1 = l1.setCookie.join(' '), k2 = l2.setCookie.join(' ');
+      rec('זכור אותי', 'עם "זכור אותי": עוגייה קבועה ל-30 יום (HttpOnly, SameSite=Strict)', /Max-Age=2592000/.test(k1) && /HttpOnly/.test(k1) && /SameSite=Strict/.test(k1), k1.replace(/=[^;]+/, '=***'));
+      rec('זכור אותי', 'בלי "זכור אותי": עוגיית דפדפן שנמחקת כשהדפדפן נסגר', !/Max-Age/.test(k2), k2.replace(/=[^;]+/, '=***'));
+      db.prepare('UPDATE sessions SET last_seen = ? WHERE user_id = ?').run(Date.now() - 2 * 3600000, rid2);
+      const a1 = await c1.req('GET', '/api/auth/me'); const a2 = await c2.req('GET', '/api/auth/me');
+      rec('זכור אותי', 'אחרי שעתיים בלי שימוש: "זכור אותי" עדיין מחובר, סשן רגיל פג', a1.status === 200 && a2.status === 401);
+      db.prepare('UPDATE sessions SET last_seen = ? WHERE user_id = ?').run(Date.now() - 8 * 86400000, rid2);
+      rec('זכור אותי', 'אחרי 8 ימים בלי שימוש גם "זכור אותי" פג', (await c1.req('GET', '/api/auth/me')).status === 401);
+      const c3 = new Client(base); const l3 = await c3.req('POST', '/api/auth/login', { username: 'remem', password: rp, remember: true }); c3.csrf = l3.data.csrf;
+      await admin.req('POST', `/api/admin/users/${rid2}/logout`, {});
+      rec('זכור אותי', 'מנהל יכול לנתק גם סשן "זכור אותי"', (await c3.req('GET', '/api/auth/me')).status === 401);
+    }
+
+    // ---------- שינוי סיסמה ע"י מנהל ----------
+    {
+      const target = db.prepare("SELECT id FROM users WHERE username='applA'").get().id;
+      r = await admin.req('POST', `/api/admin/users/${target}/password`, { password: '123456789' });
+      rec('ניהול משתמשים', 'מנהל לא יכול לקבוע סיסמה חלשה', r.status === 400, r.data.error);
+      const np2 = pw();
+      r = await admin.req('POST', `/api/admin/users/${target}/password`, { password: np2, must_change: false });
+      const oldSess = await A.req('GET', '/api/auth/me');
+      const fresh = new Client(base); const fl = await fresh.login('applA', np2);
+      rec('ניהול משתמשים', 'מנהל משנה סיסמה: הסיסמה החדשה עובדת והסשנים הישנים מנותקים', r.status === 200 && oldSess.status === 401 && fl.status === 200);
+      fresh.csrf = fl.data.csrf; users.applA.c = fresh;
+      r = await E.req('POST', `/api/admin/users/${target}/password`, { password: pw() });
+      rec('ניהול משתמשים', 'משתמש בלי הרשאת ניהול משתמשים לא יכול לשנות סיסמה לאחר', r.status === 403);
+      const chiefId = db.prepare("SELECT id FROM users WHERE username='chief'").get().id;
+      const um = roles.find(x => x.name === 'רכז תיאום');
+      await admin.req('PUT', `/api/admin/users/${users.eng.id}`, { perm_grant: ['admin.users'] });
+      r = await admin.req('PUT', `/api/admin/users/${target}`, { username: 'chief' });
+      rec('ניהול משתמשים', 'שינוי שם משתמש לשם תפוס נחסם', r.status === 400, r.data.error);
+      const engLogin = new Client(base); const el = await engLogin.login('eng', users.eng.p); engLogin.csrf = el.data.csrf;
+      r = await engLogin.req('POST', `/api/admin/users/${chiefId}/password`, { password: pw() });
+      rec('ניהול משתמשים', 'מי שמנהל משתמשים בלי הרשאת תפקידים לא יכול להחליף סיסמה למנהל המערכת', r.status === 403);
+      await admin.req('PUT', `/api/admin/users/${users.eng.id}`, { perm_grant: [] });
+      const e2 = new Client(base); const e2l = await e2.login('eng', users.eng.p); e2.csrf = e2l.data.csrf; users.eng.c = e2; void um;
+    }
+    const E2 = users.eng.c; const A2 = users.applA.c;
+
+    // ---------- מספור בקשות ----------
+    {
+      r = await admin.req('PUT', '/api/admin/settings', { req_prefix: 'BD', req_with_year: false, req_pad: 3, req_next: 50 });
+      const n1 = (await A2.req('POST', '/api/requests', { type: 'planning', title: 'מספור 1', submit: true })).data.number;
+      const n2 = (await A2.req('POST', '/api/requests', { type: 'planning', title: 'מספור 2', submit: true })).data;
+      rec('מספור בקשות', 'הגדרת קידומת, ספרות ומספר התחלה: BD-050 ואז BD-051', n1 === 'BD-050' && n2.number === 'BD-051', `${n1}, ${n2.number}`);
+      r = await admin.req('PUT', '/api/admin/settings', { req_prefix: '<script>' });
+      rec('מספור בקשות', 'קידומת עם תווים לא חוקיים נדחית', r.status === 400);
+      r = await E2.req('POST', `/api/requests/${n2.id}/number`, { number: n1 });
+      rec('מספור בקשות', 'שינוי ידני למספר שכבר קיים נחסם', r.status === 400, r.data.error);
+      r = await E2.req('POST', `/api/requests/${n2.id}/number`, { number: 'BD-2026/77' });
+      const okNum = db.prepare('SELECT number FROM requests WHERE id = ?').get(n2.id).number;
+      rec('מספור בקשות', 'מורשה עריכה משנה מספר בקשה ידנית, והשינוי נרשם בהיסטוריה', r.status === 200 && okNum === 'BD-2026/77' && !!db.prepare("SELECT 1 FROM request_history WHERE request_id = ? AND action = 'מספר הבקשה שונה'").get(n2.id));
+      r = await A2.req('POST', `/api/requests/${n2.id}/number`, { number: 'HACK-1' });
+      rec('מספור בקשות', 'מבקש רגיל לא יכול לשנות מספר בקשה', r.status === 403);
+      await admin.req('PUT', '/api/admin/settings', { req_prefix: 'TH', req_with_year: true, req_pad: 4 });
+    }
+
+    // ---------- גורמי תשתית ----------
+    {
+      const bid = infra[2].id;
+      r = await admin.req('PUT', `/api/admin/infra/${bid}`, { name: 'בזק ותקשורת – מעודכן', contact: '03-0000000', member_ids: [users.applB.id] });
+      const lst = (await admin.req('GET', '/api/admin/infra')).data.items.find(b => b.id === bid);
+      rec('גורמי תשתית', 'עריכת שם ואיש קשר ושיוך משתמש לגורם', r.status === 200 && lst.name === 'בזק ותקשורת – מעודכן' && lst.members.some(m => m.id === users.applB.id));
+      r = await admin.req('DELETE', `/api/admin/infra/${infra[0].id}`);
+      rec('גורמי תשתית', 'גורם עם היסטוריית אישורים לא נמחק (רק השבתה)', r.status === 400, r.data.error);
+      const nb = await admin.req('POST', '/api/admin/infra', { name: 'גורם זמני' });
+      r = await admin.req('DELETE', `/api/admin/infra/${nb.data.id}`);
+      rec('גורמי תשתית', 'גורם בלי היסטוריה נמחק', r.status === 200);
+      r = await A2.req('PUT', `/api/admin/infra/${bid}`, { name: 'x' });
+      rec('גורמי תשתית', 'משתמש רגיל לא יכול לערוך גורמי תשתית', r.status === 403);
+      await admin.req('PUT', `/api/admin/infra/${bid}`, { member_ids: [] });
+    }
+
+    // ---------- לוגו ----------
+    {
+      const upLogo = (name, buf, c = admin) => { const fd = new FormData(); fd.append('file', new Blob([buf]), name); return c.req('POST', '/api/admin/logo', fd); };
+      const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(200, 1)]);
+      const bad = [await upLogo('x.svg', Buffer.from('<svg onload=alert(1)>')), await upLogo('x.png', Buffer.from('<html><script>alert(1)</script>')), await upLogo('big.png', Buffer.concat([png, Buffer.alloc(1.2 * 1024 * 1024)]))];
+      rec('לוגו', 'SVG, HTML שמתחזה ל-PNG וקובץ מעל 1MB נחסמים', bad[0].status === 415 && bad[1].status === 415 && bad[2].status === 413, bad.map(b => b.status).join('/'));
+      r = await upLogo('x.png', png, A2);
+      rec('לוגו', 'משתמש רגיל לא יכול להחליף לוגו', r.status === 403);
+      r = await upLogo('logo.png', png);
+      const lg = await fetch(base + '/api/logo');
+      const me0 = await anon.req('GET', '/api/auth/me');
+      rec('לוגו', 'לוגו תקין עולה, ומוגש גם לפני התחברות (למסך הכניסה) כ-image/png עם nosniff', r.status === 200 && lg.status === 200 && lg.headers.get('content-type') === 'image/png' && lg.headers.get('x-content-type-options') === 'nosniff' && !!me0.data.logo);
+      await admin.req('DELETE', '/api/admin/logo');
+      rec('לוגו', 'הסרת לוגו מחזירה את סמל ברירת המחדל', (await fetch(base + '/api/logo')).status === 404);
+    }
+
     // ---------- SQL Injection ----------
     const sqli = [];
     for (const q of ["' OR 1=1 --", "%' OR '1'='1", "1; DROP TABLE users; --", "' UNION SELECT password_hash,1,1 FROM users --"]) {
@@ -244,14 +341,14 @@ class Client {
     rec('SQL Injection', 'סריקת קוד: אין שרשור קלט משתמש לשאילתות', concat.length === 0, concat.length ? concat[0].trim().slice(0, 100) : 'רק שמות עמודות קבועים משורשרים; כל הערכים כ-?');
 
     // ---------- תקציב: אימות סכומים ----------
-    r = await E.req('POST', '/api/projects', { name: 'פרויקט בדיקה', budget: 100000, start_date: '2026-01-01', end_date: '2026-12-31' });
+    r = await E2.req('POST', '/api/projects', { name: 'פרויקט בדיקה', budget: 100000, start_date: '2026-01-01', end_date: '2026-12-31' });
     const projId = r.data.id;
     const money = [];
-    for (const amount of [-500, 0, 'abc', '1e309', 1e12, '100; DROP']) { const x = await E.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'x', amount, entry_date: '2026-03-01' }); if (x.status !== 400) money.push(`${amount}:${x.status}`); }
-    r = await E.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'קבלן', amount: '12,500.555', entry_date: '2026-03-01' });
+    for (const amount of [-500, 0, 'abc', '1e309', 1e12, '100; DROP']) { const x = await E2.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'x', amount, entry_date: '2026-03-01' }); if (x.status !== 400) money.push(`${amount}:${x.status}`); }
+    r = await E2.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'קבלן', amount: '12,500.555', entry_date: '2026-03-01' });
     const stored = db.prepare('SELECT amount FROM budget_entries WHERE project_id=?').get(projId);
     rec('מחירים/סכומים', 'סכומים שליליים, אפס, טקסט ואינסוף נדחים; סכום מעוגל לאגורות בשרת', money.length === 0 && stored.amount === 12500.56, money.join(',') || `נשמר ${stored.amount}`);
-    r = await A.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'x', amount: 5, entry_date: '2026-03-01' });
+    r = await A2.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'x', amount: 5, entry_date: '2026-03-01' });
     rec('מחירים/סכומים', 'רק בעלי הרשאת תקציב יכולים להוסיף הוצאות', r.status === 403);
 
     // ---------- העלאת קבצים ----------
@@ -261,14 +358,14 @@ class Client {
     }
     const pdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
     const up = {};
-    up.ok = await upload(A, 'תוכנית.pdf', pdf);
-    up.exe = await upload(A, 'setup.exe', Buffer.from('MZ\x90\x00'));
-    up.html = await upload(A, 'page.html', Buffer.from('<html><script>alert(1)</script>'));
-    up.svg = await upload(A, 'x.svg', Buffer.from('<svg onload=alert(1)>'));
-    up.spoof = await upload(A, 'fake.pdf', Buffer.from('<html><script>alert(1)</script></html>'));
-    up.double = await upload(A, 'shell.php.pdf', pdf);
-    up.mz = await upload(A, 'plan.dwg', Buffer.from('MZ\x90\x00 fake'));
-    up.big = await upload(A, 'big.pdf', Buffer.concat([pdf, Buffer.alloc(21 * 1024 * 1024)]));
+    up.ok = await upload(A2, 'תוכנית.pdf', pdf);
+    up.exe = await upload(A2, 'setup.exe', Buffer.from('MZ\x90\x00'));
+    up.html = await upload(A2, 'page.html', Buffer.from('<html><script>alert(1)</script>'));
+    up.svg = await upload(A2, 'x.svg', Buffer.from('<svg onload=alert(1)>'));
+    up.spoof = await upload(A2, 'fake.pdf', Buffer.from('<html><script>alert(1)</script></html>'));
+    up.double = await upload(A2, 'shell.php.pdf', pdf);
+    up.mz = await upload(A2, 'plan.dwg', Buffer.from('MZ\x90\x00 fake'));
+    up.big = await upload(A2, 'big.pdf', Buffer.concat([pdf, Buffer.alloc(21 * 1024 * 1024)]));
     up.otherReq = await upload(users.applB.c, 'x.pdf', pdf);
     rec('העלאת קבצים', 'PDF תקין מתקבל', up.ok.status === 201);
     rec('העלאת קבצים', 'exe / html / svg נחסמים (415)', [up.exe, up.html, up.svg].every(x => x.status === 415));
@@ -279,7 +376,7 @@ class Client {
     rec('העלאת קבצים', 'אי אפשר לצרף קובץ לבקשה של משתמש אחר', up.otherReq.status === 404);
     const storedNames = fs.readdirSync(path.join(dataDir, 'uploads'));
     rec('העלאת קבצים', 'קבצים נשמרים בשם אקראי מחוץ לתיקייה הציבורית', storedNames.every(n => /^[a-f0-9]{48}$/.test(n)), storedNames.length + ' קבצים');
-    const dl = await A.req('GET', `/api/documents/${up.ok.data.id}/download`, undefined, { raw: true });
+    const dl = await A2.req('GET', `/api/documents/${up.ok.data.id}/download`, undefined, { raw: true });
     rec('העלאת קבצים', 'הורדה כ-attachment עם nosniff ו-CSP sandbox', /attachment/.test(dl.headers.get('content-disposition')) && dl.headers.get('x-content-type-options') === 'nosniff' && /sandbox/.test(dl.headers.get('content-security-policy')));
     r = await users.applB.c.req('GET', `/api/documents/${up.ok.data.id}/download`);
     rec('העלאת קבצים', 'משתמש לא מורשה לא יכול להוריד קובץ של אחר', r.status === 404);
@@ -288,9 +385,9 @@ class Client {
     const r3 = await admin.req('PUT', '/api/admin/settings', { allowed_ext: ['pdf', 'html'] });
     rec('העלאת קבצים', 'מנהל לא יכול לאשר סיומות מסוכנות (svg/html) גם מלוח הבקרה', r.status === 400 && r3.status === 400, r.data.error);
     await admin.req('PUT', '/api/admin/settings', { allowed_ext: ['txt', 'png'], max_mb: 1 });
-    const t1 = await upload(A, 'notes.txt', Buffer.from('שלום'));
-    const t2 = await upload(A, 'again.pdf', pdf);
-    const t3 = await upload(A, 'big.txt', Buffer.alloc(1.5 * 1024 * 1024, 65));
+    const t1 = await upload(A2, 'notes.txt', Buffer.from('שלום'));
+    const t2 = await upload(A2, 'again.pdf', pdf);
+    const t3 = await upload(A2, 'big.txt', Buffer.alloc(1.5 * 1024 * 1024, 65));
     rec('העלאת קבצים', 'שינוי סוגים וגודל מלוח הבקרה נאכף מיד (txt נוסף, pdf הוסר, 1MB)', t1.status === 201 && t2.status === 415 && t3.status === 413, `${t1.status}/${t2.status}/${t3.status}`);
     await admin.req('PUT', '/api/admin/settings', { allowed_ext: ['pdf', 'png', 'jpg', 'jpeg', 'docx', 'xlsx', 'dwg', 'dxf', 'zip', 'tif', 'tiff'], max_mb: 20 });
 
@@ -333,7 +430,7 @@ class Client {
     rec('הרשאות', 'אי אפשר להשבית את מנהל המערכת האחרון', r.status === 400, r.data.error);
 
     // ---------- debug ----------
-    r = await A.req('GET', '/api/requests/999999');
+    r = await A2.req('GET', '/api/requests/999999');
     const errText = JSON.stringify(r.data);
     rec('Debug', 'שגיאות לא חושפות stack trace / נתיבים', !/\/home\/|node:|at \w+ \(|sqlite/i.test(errText), errText);
     rec('Debug', 'מצב פרודקשן: NODE_ENV=production מכבה פרטי שגיאה', fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').includes("config.isProd ? 'שגיאת שרת'"));

@@ -85,9 +85,10 @@ route('POST', '/api/auth/login', async (req, res) => {
   }
   db.prepare('UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login = ? WHERE id = ?').run(nowIso(), user.id);
   auth.destroySession(req, res); // סשן חדש בכל התחברות
-  const csrf = auth.createSession(res, user.id, req);
+  const remember = req.body.remember === true;
+  const csrf = auth.createSession(res, user.id, req, remember);
   req.user = user;
-  audit(req, 'login_success', {});
+  audit(req, 'login_success', { remember });
   return { ok: true, csrf, must_change_pw: !!user.must_change_pw };
 });
 
@@ -98,11 +99,11 @@ route('POST', '/api/auth/logout', (req, res) => {
 });
 
 route('GET', '/api/auth/me', (req) => {
-  if (!req.user) return status(401, { error: 'לא מחובר', title: getSetting('org.system_title'), org: getSetting('org.name') });
+  if (!req.user) return status(401, { error: 'לא מחובר', title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null });
   const u = req.user;
   const unread = db.prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read = 0').get(u.id).c;
   return { user: publicUser(u), perms: permsList(req), csrf: req.session.csrf, prefs: JSON.parse(u.prefs || '{}'),
-    title: getSetting('org.system_title'), org: getSetting('org.name'), unread,
+    title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, unread,
     meta: { types: W.TYPES, statuses: W.STATUSES, tracks: W.TRACKS, trackStatus: W.TRACK_STATUS,
       files: { allowed: up.allowedExt(), maxMb: Math.round(up.maxBytes() / 1048576) } } };
 });
@@ -119,7 +120,7 @@ route('POST', '/api/auth/change-password', async (req, res) => {
   const hash = await sec.hashPassword(next);
   db.prepare('UPDATE users SET password_hash = ?, must_change_pw = 0 WHERE id = ?').run(hash, req.user.id);
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.user.id); // ניתוק כל ההתחברויות
-  const csrf = auth.createSession(res, req.user.id, req);
+  const csrf = auth.createSession(res, req.user.id, req, !!req.session.remember);
   audit(req, 'password_changed', {});
   return { ok: true, csrf };
 });
@@ -216,6 +217,23 @@ function requestFields(b) {
     planned_end: v.date(b.planned_end, { name: 'תאריך סיום' }),
   };
 }
+// מספור בקשות לפי ההגדרות בלוח הבקרה: קידומת, שנה, מספר ספרות, ומספר הבא (אפשר לקבוע ידנית)
+function numberPrefix() {
+  const pre = getSetting('requests.prefix') || '';
+  return getSetting('requests.with_year') === '1' ? `${pre ? pre + '-' : ''}${new Date().getFullYear()}-` : (pre ? pre + '-' : '');
+}
+function nextRequestNumber() {
+  const prefix = numberPrefix(); const pad = parseInt(getSetting('requests.pad'), 10) || 4;
+  const forced = parseInt(getSetting('requests.next') || '0', 10);
+  let max = 0;
+  for (const r of db.prepare("SELECT number FROM requests WHERE substr(number, 1, ?) = ?").all(prefix.length, prefix)) {
+    const n = parseInt(r.number.slice(prefix.length), 10); if (Number.isFinite(n) && n > max) max = n;
+  }
+  let n = Math.max(max + 1, forced || 0);
+  while (db.prepare('SELECT 1 FROM requests WHERE number = ?').get(prefix + String(n).padStart(pad, '0'))) n++;
+  if (forced && n >= forced) setSetting('requests.next', '0');
+  return prefix + String(n).padStart(pad, '0');
+}
 function slaDays(track, trackStatus) {
   return parseInt(getSetting(track === 'fast' && trackStatus === 'approved' ? 'sla.fast_days' : 'sla.regular_days'), 10) || 14;
 }
@@ -264,9 +282,7 @@ route('POST', '/api/requests', (req) => {
   const submit = req.body.submit === true;
   const fastReason = v.str(req.body.fast_reason, { max: 1000, name: 'נימוק למסלול מזורז', required: wantFast });
   const r = tx(() => {
-    const year = new Date().getFullYear();
-    const cnt = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE number LIKE ?").get(`TH-${year}-%`).c + 1;
-    const number = `TH-${year}-${String(cnt).padStart(4, '0')}`;
+    const number = nextRequestNumber();
     const info = db.prepare(`INSERT INTO requests (number, type, title, description, address, gush, helka, project_id, applicant_id, status, track, track_status,
       planned_start, planned_end, submitted_at, due_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(number, f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_id, req.user.id, submit ? 'submitted' : 'draft',
@@ -320,6 +336,17 @@ route('DELETE', '/api/requests/:id', (req) => {
   db.prepare('DELETE FROM requests WHERE id = ?').run(r.id);
   for (const f of files) fs.rm(up.storedPath(f.stored_name), { force: true }, () => {});
   audit(req, 'request_deleted', { id: r.id, number: r.number }, 'warning');
+  return { ok: true };
+});
+
+route('POST', '/api/requests/:id/number', (req) => {
+  requirePerm(req, 'requests.edit_all');
+  const r = loadRequest(req.params.id);
+  const number = v.str(req.body.number, { max: 40, required: true, name: 'מספר בקשה', pattern: /^[A-Za-z0-9\u0590-\u05FF][A-Za-z0-9\u0590-\u05FF/_.-]{0,39}$/ });
+  if (db.prepare('SELECT 1 FROM requests WHERE number = ? AND id != ?').get(number, r.id)) throw new sec.ValidationError('המספר כבר בשימוש בבקשה אחרת');
+  db.prepare('UPDATE requests SET number = ?, updated_at = ? WHERE id = ?').run(number, nowIso(), r.id);
+  history(r.id, req.user.id, 'מספר הבקשה שונה', `${r.number} ← ${number}`);
+  audit(req, 'request_number_changed', { id: r.id, from: r.number, to: number }, 'notice');
   return { ok: true };
 });
 
@@ -763,6 +790,7 @@ route('PUT', '/api/admin/users/:id', (req) => {
   if (!u) throw new HttpError(404, 'משתמש לא נמצא');
   const b = req.body;
   const upd = {
+    username: v.str(b.username ?? u.username, { max: 60, required: true, name: 'שם משתמש', pattern: /^[a-zA-Z0-9._-]{3,60}$/ }),
     full_name: v.str(b.full_name ?? u.full_name, { max: 100, required: true, name: 'שם מלא' }),
     email: v.str(b.email ?? u.email, { max: 200, name: 'דוא"ל', pattern: v.EMAIL }),
     phone: v.str(b.phone ?? u.phone, { max: 30, name: 'טלפון', pattern: /^[\d+\-\s()]*$/ }),
@@ -777,6 +805,7 @@ route('PUT', '/api/admin/users/:id', (req) => {
   const permsChanged = upd.role_id !== u.role_id || upd.perm_grant !== u.perm_grant || upd.perm_deny !== u.perm_deny;
   if (permsChanged) requirePerm(req, 'admin.roles');
   if (!db.prepare('SELECT 1 FROM roles WHERE id = ?').get(upd.role_id)) throw new sec.ValidationError('תפקיד לא קיים');
+  if (upd.username.toLowerCase() !== u.username.toLowerCase() && db.prepare('SELECT 1 FROM users WHERE username = ? AND id != ?').get(upd.username, u.id)) throw new sec.ValidationError('שם המשתמש תפוס');
   // הגנה: לא ניתן לנטרל את מנהל המערכת האחרון
   const after = { ...u, ...upd };
   const stillAdmin = after.active && auth.effectivePerms(after).has('admin.roles') && auth.effectivePerms(after).has('admin.users');
@@ -785,6 +814,22 @@ route('PUT', '/api/admin/users/:id', (req) => {
   db.prepare(`UPDATE users SET ${cols.map(c => c + ' = ?').join(', ')} WHERE id = ?`).run(...cols.map(c => upd[c]), u.id);
   if (!upd.active || permsChanged) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id); // ניתוק מיידי
   audit(req, 'user_updated', { id: u.id, permsChanged, active: !!upd.active }, permsChanged ? 'notice' : 'info');
+  return { ok: true };
+});
+route('POST', '/api/admin/users/:id/password', async (req) => {
+  requirePerm(req, 'admin.users');
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!u) throw new HttpError(404, 'משתמש לא נמצא');
+  // שינוי סיסמה של מנהל אחר מחייב גם הרשאת תפקידים – מונע השתלטות על חשבון בעל הרשאות גבוהות יותר
+  const target = auth.effectivePerms(u);
+  if ((target.has('admin.roles') || target.has('admin.users')) && u.id !== req.user.id) requirePerm(req, 'admin.roles');
+  const probs = sec.passwordProblems(req.body.password, u.username);
+  if (probs.length) throw new sec.ValidationError('סיסמה חלשה: ' + probs.join(', '));
+  const hash = await sec.hashPassword(req.body.password);
+  db.prepare('UPDATE users SET password_hash = ?, must_change_pw = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?').run(hash, req.body.must_change === false ? 0 : 1, u.id);
+  db.prepare('UPDATE password_resets SET used = 1 WHERE user_id = ?').run(u.id);
+  if (u.id !== req.user.id) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+  audit(req, 'user_password_set_by_admin', { id: u.id, username: u.username }, 'notice');
   return { ok: true };
 });
 route('POST', '/api/admin/users/:id/reset-link', (req) => {
@@ -853,6 +898,8 @@ route('GET', '/api/admin/settings', (req) => {
     known_ext: Object.keys(up.MIME), forbidden_ext: [...up.FORBIDDEN_EXT].sort(),
     sla_regular_days: +getSetting('sla.regular_days'), sla_fast_days: +getSetting('sla.fast_days'),
     org_name: getSetting('org.name'), system_title: getSetting('org.system_title'),
+    req_prefix: getSetting('requests.prefix'), req_with_year: getSetting('requests.with_year') === '1', req_pad: +getSetting('requests.pad'),
+    req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'),
   };
 });
 route('PUT', '/api/admin/settings', (req) => {
@@ -872,11 +919,21 @@ route('PUT', '/api/admin/settings', (req) => {
   if (b.sla_fast_days !== undefined) setSetting('sla.fast_days', v.num(b.sla_fast_days, { min: 1, max: 60, name: 'ימי טיפול במסלול מזורז' }));
   if (b.org_name !== undefined) setSetting('org.name', v.str(b.org_name, { max: 100, required: true, name: 'שם הארגון' }));
   if (b.system_title !== undefined) setSetting('org.system_title', v.str(b.system_title, { max: 100, required: true, name: 'שם המערכת' }));
+  if (b.req_prefix !== undefined) setSetting('requests.prefix', v.str(b.req_prefix, { max: 10, name: 'קידומת', pattern: /^[A-Za-z0-9\u0590-\u05FF]*$/ }) || '');
+  if (b.req_with_year !== undefined) setSetting('requests.with_year', b.req_with_year ? '1' : '0');
+  if (b.req_pad !== undefined) setSetting('requests.pad', v.num(b.req_pad, { min: 1, max: 8, name: 'מספר ספרות' }));
+  if (b.req_next !== undefined && b.req_next !== null && b.req_next !== '') setSetting('requests.next', v.num(b.req_next, { min: 1, max: 99999999, name: 'המספר הבא' }));
   audit(req, 'settings_updated', b, 'notice');
   return { ok: true };
 });
+route('GET', '/api/admin/infra', (req) => {
+  requirePerm(req, 'admin.roles', 'admin.settings');
+  return { items: db.prepare(`SELECT b.*, (SELECT COUNT(*) FROM request_approvals ra WHERE ra.infra_body_id = b.id) AS requests,
+    (SELECT json_group_array(json_object('id', u.id, 'full_name', u.full_name)) FROM users u WHERE u.infra_body_id = b.id AND u.active = 1) AS members
+    FROM infra_bodies b ORDER BY b.active DESC, b.name`).all().map(b => ({ ...b, members: JSON.parse(b.members) })) };
+});
 route('POST', '/api/admin/infra', (req) => {
-  requirePerm(req, 'admin.settings');
+  requirePerm(req, 'admin.roles', 'admin.settings');
   const name = v.str(req.body.name, { max: 100, required: true, name: 'שם גורם' });
   if (db.prepare('SELECT 1 FROM infra_bodies WHERE name = ?').get(name)) throw new sec.ValidationError('גורם בשם זה קיים');
   const info = db.prepare('INSERT INTO infra_bodies (name, contact) VALUES (?, ?)').run(name, v.str(req.body.contact, { max: 200, name: 'איש קשר' }));
@@ -884,13 +941,31 @@ route('POST', '/api/admin/infra', (req) => {
   return status(201, { id: Number(info.lastInsertRowid) });
 });
 route('PUT', '/api/admin/infra/:id', (req) => {
-  requirePerm(req, 'admin.settings');
+  requirePerm(req, 'admin.roles', 'admin.settings');
   const b = db.prepare('SELECT * FROM infra_bodies WHERE id = ?').get(req.params.id);
   if (!b) throw new HttpError(404, 'לא נמצא');
-  db.prepare('UPDATE infra_bodies SET name = ?, contact = ?, active = ? WHERE id = ?').run(
-    v.str(req.body.name ?? b.name, { max: 100, required: true, name: 'שם' }), v.str(req.body.contact ?? b.contact, { max: 200, name: 'איש קשר' }),
-    req.body.active === undefined ? b.active : (req.body.active ? 1 : 0), b.id);
-  audit(req, 'infra_updated', { id: b.id });
+  const name = v.str(req.body.name ?? b.name, { max: 100, required: true, name: 'שם' });
+  if (db.prepare('SELECT 1 FROM infra_bodies WHERE name = ? AND id != ?').get(name, b.id)) throw new sec.ValidationError('גורם בשם זה קיים');
+  tx(() => {
+    db.prepare('UPDATE infra_bodies SET name = ?, contact = ?, active = ? WHERE id = ?').run(name, v.str(req.body.contact ?? b.contact, { max: 200, name: 'איש קשר' }),
+      req.body.active === undefined ? b.active : (req.body.active ? 1 : 0), b.id);
+    // שיוך משתמשים לגורם (משתמש משויך יכול לתת חוות דעת בשם הגורם)
+    if (Array.isArray(req.body.member_ids)) {
+      const ids = req.body.member_ids.slice(0, 200).map(x => v.id(x, { required: true, name: 'משתמש' }));
+      db.prepare('UPDATE users SET infra_body_id = NULL WHERE infra_body_id = ?').run(b.id);
+      for (const uid of ids) db.prepare('UPDATE users SET infra_body_id = ? WHERE id = ?').run(b.id, uid);
+    }
+  });
+  audit(req, 'infra_updated', { id: b.id, name });
+  return { ok: true };
+});
+route('DELETE', '/api/admin/infra/:id', (req) => {
+  requirePerm(req, 'admin.roles', 'admin.settings');
+  const b = db.prepare('SELECT * FROM infra_bodies WHERE id = ?').get(req.params.id);
+  if (!b) throw new HttpError(404, 'לא נמצא');
+  if (db.prepare('SELECT 1 FROM request_approvals WHERE infra_body_id = ?').get(b.id)) throw new sec.ValidationError('לגורם יש היסטוריית אישורים בבקשות – אפשר להשבית אותו, לא למחוק');
+  tx(() => { db.prepare('UPDATE users SET infra_body_id = NULL WHERE infra_body_id = ?').run(b.id); db.prepare('DELETE FROM infra_bodies WHERE id = ?').run(b.id); });
+  audit(req, 'infra_deleted', { id: b.id, name: b.name }, 'notice');
   return { ok: true };
 });
 
@@ -914,6 +989,44 @@ route('POST', '/api/admin/backups', async (req) => {
   const r = await backup.runBackup('manual');
   audit(req, 'backup_manual', r, 'notice');
   return r;
+});
+
+// ---------------- לוגו הארגון ----------------
+// PNG / JPG / WebP בלבד (לא SVG – יכול להכיל קוד), עד 1MB, נבדק לפי התוכן. מוצג גם במסך הכניסה, לכן הקריאה ציבורית.
+const LOGO_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+const path = require('node:path');
+route('POST', '/api/admin/logo', async (req) => {
+  requirePerm(req, 'admin.settings');
+  const { file } = await up.parseMultipart(req, 1024 * 1024);
+  const ext = (file.filename.toLowerCase().split('.').pop() || '');
+  if (!LOGO_TYPES[ext]) throw new HttpError(415, 'הלוגו חייב להיות PNG, JPG או WebP');
+  if (file.data.length > 1024 * 1024) throw new HttpError(413, 'הלוגו גדול מ-1MB');
+  if (!up.SIGNATURES[ext](file.data)) throw new HttpError(415, 'תוכן הקובץ אינו תמונה תקינה');
+  const name = `logo-${Date.now()}.${ext === 'jpeg' ? 'jpg' : ext}`;
+  fs.writeFileSync(path.join(config.dataDir, name), file.data, { mode: 0o600 });
+  const old = getSetting('org.logo');
+  setSetting('org.logo', name);
+  if (old && /^logo-\d+\.(png|jpg|webp)$/.test(old)) fs.rm(path.join(config.dataDir, old), { force: true }, () => {});
+  audit(req, 'logo_updated', { size: file.data.length }, 'notice');
+  return { ok: true, logo: name };
+});
+route('DELETE', '/api/admin/logo', (req) => {
+  requirePerm(req, 'admin.settings');
+  const old = getSetting('org.logo');
+  setSetting('org.logo', '');
+  if (old && /^logo-\d+\.(png|jpg|webp)$/.test(old)) fs.rm(path.join(config.dataDir, old), { force: true }, () => {});
+  audit(req, 'logo_removed', {}, 'notice');
+  return { ok: true };
+});
+route('GET', '/api/logo', (req, res) => {
+  const name = getSetting('org.logo');
+  if (!name || !/^logo-\d+\.(png|jpg|webp)$/.test(name)) throw new HttpError(404, 'אין לוגו');
+  const file = path.join(config.dataDir, name);
+  if (!fs.existsSync(file)) throw new HttpError(404, 'אין לוגו');
+  const buf = fs.readFileSync(file);
+  res.writeHead(200, { 'Content-Type': LOGO_TYPES[name.split('.').pop()], 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=31536000, immutable',
+    'Content-Security-Policy': "default-src 'none'; sandbox", 'Cross-Origin-Resource-Policy': 'same-origin' });
+  res.end(buf);
 });
 
 module.exports = { match };

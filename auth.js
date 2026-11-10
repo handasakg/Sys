@@ -19,18 +19,22 @@ function parseCookies(req) {
   return out;
 }
 
+// maxAgeSec = null → עוגיית דפדפן שנמחקת כשהדפדפן נסגר (בלי "זכור אותי")
 function cookieAttrs(maxAgeSec) {
-  return `Path=/; HttpOnly; SameSite=Strict${config.forceHttps ? '; Secure' : ''}; Max-Age=${maxAgeSec}`;
+  return `Path=/; HttpOnly; SameSite=Strict${config.forceHttps ? '; Secure' : ''}${maxAgeSec === null ? '' : `; Max-Age=${maxAgeSec}`}`;
+}
+function limits(s) {
+  return s.remember ? { idle: config.rememberIdleDays * 86400000, abs: config.rememberDays * 86400000 }
+    : { idle: config.sessionIdleMinutes * 60000, abs: config.sessionAbsoluteHours * 3600000 };
 }
 
-function createSession(res, userId, req) {
-  // מחיקת סשנים ישנים ופגי תוקף של המשתמש (מונע session fixation, הצטברות)
+function createSession(res, userId, req, remember = false) {
   const token = randomToken(32);
   const csrf = randomToken(24);
   const now = Date.now();
-  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, created, last_seen, ip, ua) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(sha256(token), userId, csrf, now, now, req.socket.remoteAddress || '', String(req.headers['user-agent'] || '').slice(0, 200));
-  res.setHeader('Set-Cookie', `${COOKIE}=${token}; ${cookieAttrs(config.sessionAbsoluteHours * 3600)}`);
+  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, created, last_seen, ip, ua, remember) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(sha256(token), userId, csrf, now, now, req.socket.remoteAddress || '', String(req.headers['user-agent'] || '').slice(0, 200), remember ? 1 : 0);
+  res.setHeader('Set-Cookie', `${COOKIE}=${token}; ${cookieAttrs(remember ? config.rememberDays * 86400 : null)}`);
   return csrf;
 }
 
@@ -55,7 +59,8 @@ function loadSession(req) {
   const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(h);
   if (!s) return null;
   const now = Date.now();
-  if (now - s.last_seen > config.sessionIdleMinutes * 60000 || now - s.created > config.sessionAbsoluteHours * 3600000) {
+  const lim = limits(s);
+  if (now - s.last_seen > lim.idle || now - s.created > lim.abs) {
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(h);
     return null;
   }
@@ -81,8 +86,8 @@ function requirePerm(req, ...perms) {
 }
 
 setInterval(() => {
-  const cutoff = Date.now() - config.sessionAbsoluteHours * 3600000;
-  db.prepare('DELETE FROM sessions WHERE created < ?').run(cutoff);
+  db.prepare('DELETE FROM sessions WHERE remember = 0 AND created < ?').run(Date.now() - config.sessionAbsoluteHours * 3600000);
+  db.prepare('DELETE FROM sessions WHERE remember = 1 AND created < ?').run(Date.now() - config.rememberDays * 86400000);
   db.prepare('DELETE FROM password_resets WHERE expires < ?').run(Date.now() - 86400000);
 }, 15 * 60 * 1000).unref();
 

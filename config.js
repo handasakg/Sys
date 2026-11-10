@@ -45,6 +45,9 @@ const config = Object.freeze({
   sessionIdleMinutes: int('SESSION_IDLE_MINUTES', 30),
   sessionAbsoluteHours: int('SESSION_ABSOLUTE_HOURS', 8),
   resetTokenMinutes: int('RESET_TOKEN_MINUTES', 30),
+  // "זכור אותי": סשן קבוע בדפדפן. פג אחרי 7 ימים בלי שימוש, ולכל היותר אחרי 30 יום.
+  rememberIdleDays: int('REMEMBER_IDLE_DAYS', 7),
+  rememberDays: int('REMEMBER_DAYS', 30),
   maxBodyBytes: 1024 * 1024, // JSON
   hardMaxUploadMb: 50,      // תקרה קשיחה שלא ניתן לעקוף מלוח הבקרה
 });

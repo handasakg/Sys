@@ -102,6 +102,13 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     const page = await ctx.newPage();
     page.on('dialog', d => { xssFired = true; d.dismiss(); });
     const csp = []; page.on('console', m => { if (/Content Security Policy|Refused/.test(m.text())) csp.push(m.text()); if (m.type() === 'error') consoleErrors.push('1280: ' + m.text()); });
+    // ברירת מחדל חדשה + זכור אותי
+    await page.goto(base + '/'); await page.waitForSelector('form');
+    const def = await page.evaluate(() => { const d = document.documentElement.dataset; return `${d.theme}/${d.bg}/${d.style}/${d.shape}/${d.sidebar}`; });
+    rec('עיצוב', 'ברירת המחדל: אוקיינוס, רקע זוהר נע, כרטיסי זכוכית, פינות מעוגלות, תפריט צף', def === 'ocean/aurora/glass/soft/floating', def);
+    const rememberBox = await page.evaluate(() => { const c = document.querySelector('input[name=remember]'); return c && c.type === 'checkbox' && !!c.closest('label') && c.getBoundingClientRect().width >= 24; });
+    rec('זכור אותי', 'במסך הכניסה יש תיבת "זכור אותי" עם תווית והסבר', !!rememberBox);
+    await page.screenshot({ path: path.join(SHOTS, 'login-default-1280.png') });
     // מקלדת במסך כניסה
     await page.goto(base + '/'); await page.waitForSelector('form');
     await page.keyboard.press('Tab');
@@ -142,7 +149,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     rec('נגישות', 'תוויות לשדות, שמות לכפתורים, alt לתמונות, h1 יחיד, lang=he בכל 18 המסכים', out.a11y.length === 0, out.a11y.map(x => `${x.page}: ${x.issues.join(';')}`).join(' | '));
 
     // ניגודיות
-    const themes = [['drafting', 'light'], ['drafting', 'dark'], ['concrete', 'light'], ['concrete', 'dark'], ['sand', 'light'], ['sand', 'dark'], ['ocean', 'light'], ['ocean', 'dark'], ['aurora', 'light'], ['aurora', 'dark'], ['night', 'dark'], ['graphite', 'dark'], ['aurora', 'light', 'glass', 'aurora'], ['aurora', 'dark', 'glass', 'aurora'], ['ocean', 'light', 'raised', 'gradient'], ['concrete', 'light', 'outline', 'plain']];
+    const themes = [['drafting', 'light'], ['drafting', 'dark'], ['concrete', 'light'], ['concrete', 'dark'], ['sand', 'light'], ['sand', 'dark'], ['ocean', 'light'], ['ocean', 'dark'], ['aurora', 'light'], ['aurora', 'dark'], ['night', 'dark'], ['graphite', 'dark'], ['ocean', 'light', 'glass', 'aurora'], ['ocean', 'dark', 'glass', 'aurora'], ['aurora', 'light', 'glass', 'aurora'], ['aurora', 'dark', 'glass', 'aurora'], ['ocean', 'light', 'raised', 'gradient'], ['concrete', 'light', 'outline', 'plain']];
     const contrastFn = () => {
       const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); if (!m) return null; const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p[3] === undefined ? 1 : p[3] }; };
       const lum = ({ r, g, b }) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
@@ -183,7 +190,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       if (style === 'glass' || theme === 'graphite') { await page.goto(base + '/#/reports'); await page.waitForTimeout(400); await page.evaluate(setT, [theme, mode, style, bg]); await page.waitForTimeout(150); await page.screenshot({ path: path.join(SHOTS, `theme-${theme}-${mode}-${style}.png`), fullPage: true }); }
     }
     const cf = out.contrast.filter(c => c.fails.length);
-    rec('נגישות', 'ניגודיות AA (4.5:1 / 3:1) בכל 12 ערכות הצבע + 4 שילובי סגנון/רקע (8 מסכים כל אחד)', cf.length === 0, cf.map(c => `${c.theme}/${c.mode}: ${c.fails.length} – ${c.fails.slice(0, 3).join('; ')}`).join(' | '));
+    rec('נגישות', 'ניגודיות AA (4.5:1 / 3:1) בכל 12 ערכות הצבע + 6 שילובי סגנון/רקע (כולל ברירת המחדל החדשה) (8 מסכים כל אחד)', cf.length === 0, cf.map(c => `${c.theme}/${c.mode}: ${c.fails.length} – ${c.fails.slice(0, 3).join('; ')}`).join(' | '));
     for (const p of ['/privacy.html', '/accessibility.html', '/nope-404']) {
       await page.goto(base + p); const c = await page.evaluate(contrastFn);
       if (c.fails.length) out.contrast.push({ theme: 'static', page: p, fails: c.fails });
@@ -211,6 +218,25 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     const cr = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
     rec('עיצוב', 'צבע אישי בהיר מדי (צהוב) מתוקן אוטומטית לניגודיות קריאה', cr(acc.a, acc.s) >= 4.5 && /הוכהה/.test(acc.msg), `${acc.a} על ${acc.s} = ${cr(acc.a, acc.s).toFixed(2)}:1`);
     await page.click('text=ביטול השינויים');
+
+    // גורמי תשתית בלשונית בתפקידים והרשאות
+    await page.goto(base + '/#/admin/roles?tab=infra'); await page.waitForSelector('[role=tab][aria-selected=true]');
+    const tabName = await page.textContent('[role=tab][aria-selected=true]');
+    await page.click('.approval .btn:has-text("עריכה")'); await page.waitForSelector('dialog[open]');
+    await page.fill('dialog[open] input[name=contact]', '08-6000000'); await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(400);
+    rec('גורמי תשתית', 'לשונית "גורמי תשתית" בתוך תפקידים והרשאות: עריכה ושמירה', tabName === 'גורמי תשתית' && (await page.textContent('main')).includes('08-6000000'));
+    // לוגו: העלאה מהממשק ← מופיע בתפריט ובמסך הכניסה
+    await page.goto(base + '/#/admin/settings'); await page.waitForSelector('#logo-file', { state: 'attached' });
+    const fs2 = require('node:fs');
+    await page.setInputFiles('#logo-file', { name: 'logo.png', mimeType: 'image/png', buffer: fs2.readFileSync(path.join(ROOT, 'og-image.png')).length > 1048576 ? Buffer.alloc(1) : fs2.readFileSync(path.join(ROOT, 'og-image.png')) });
+    await page.waitForSelector('.brand-mark.custom');
+    const ctxL = await browser.newContext({ viewport: { width: 1280, height: 800 } }); const pl = await ctxL.newPage();
+    await pl.goto(base + '/'); await pl.waitForSelector('.auth-logo');
+    const lsrc = await pl.getAttribute('.auth-logo', 'src'); const lok = await pl.evaluate(() => document.querySelector('.auth-logo').naturalWidth > 0);
+    rec('לוגו', 'לוגו שהועלה מהגדרות מופיע בתפריט הצד ובמסך הכניסה', lsrc.startsWith('/api/logo?v=') && lok, lsrc);
+    await pl.screenshot({ path: path.join(SHOTS, 'login-logo-1280.png') }); await ctxL.close();
+    page.once('dialog', d => d.accept());
+    await page.click('text=הסרת לוגו'); await page.click('dialog[open] .btn.danger'); await page.waitForTimeout(400);
 
     // חלון קופץ: פוקוס, Esc, החזרת פוקוס
     await page.goto(base + '/#/admin/users'); await page.waitForSelector('h1');

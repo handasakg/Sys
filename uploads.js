@@ -75,12 +75,12 @@ function readBody(req, limit) {
 }
 
 // מפענח multipart/form-data פשוט (קובץ אחד + שדות טקסט)
-async function parseMultipart(req) {
+async function parseMultipart(req, limit) {
   const ct = String(req.headers['content-type'] || '');
   const m = ct.match(/^multipart\/form-data;\s*boundary=(?:"([^"]+)"|([^\s;]+))/i);
   if (!m) throw new HttpError(400, 'פורמט העלאה לא תקין');
   const boundary = Buffer.from('--' + (m[1] || m[2]));
-  const body = await readBody(req, maxBytes() + 64 * 1024);
+  const body = await readBody(req, (limit || maxBytes()) + 64 * 1024);
   const fields = {}; let file = null;
   let pos = body.indexOf(boundary);
   while (pos !== -1) {
@@ -133,4 +133,4 @@ function storedPath(stored) {
   return path.join(config.uploadDir, stored);
 }
 
-module.exports = { handleUpload, storedPath, allowedExt, maxBytes, FORBIDDEN_EXT, MIME, readBody };
+module.exports = { handleUpload, storedPath, allowedExt, maxBytes, FORBIDDEN_EXT, MIME, readBody, parseMultipart, SIGNATURES };

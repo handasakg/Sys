@@ -124,6 +124,11 @@ if (db.prepare('SELECT COUNT(*) AS c FROM infra_bodies').get().c === 0) {
   for (const n of ['מים וביוב (תאגיד)', 'חברת החשמל', 'בזק / תקשורת', 'גז', 'תנועה ותחבורה', 'ניקוז', 'גנים ונוף', 'תאורת רחובות']) ins.run(n);
 }
 
+// הרחבות סכמה למסדים קיימים
+const hasCol = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some(x => x.name === c);
+if (!hasCol('sessions', 'remember')) db.exec('ALTER TABLE sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 0');
+for (const [k, val] of Object.entries({ 'requests.prefix': 'TH', 'requests.with_year': '1', 'requests.pad': '4' })) db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, val);
+
 function tx(fn) {
   db.exec('BEGIN IMMEDIATE');
   try { const r = fn(); db.exec('COMMIT'); return r; }
