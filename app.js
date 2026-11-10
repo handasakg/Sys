@@ -221,16 +221,36 @@
   }
 
   // ---------- מסך כניסה ----------
+  // רקע מונפש למסך הכניסה: קווי תשתית (מים, חשמל, תקשורת, גז, ניקוז) שזורמים לאורך הפאנל, עם תחנות שמהבהבות בעדינות.
+  function authBackdrop() {
+    const W = 800, H = 900;
+    const lines = [
+      ['var(--m-water)', 'M-40 690 C 120 640, 210 520, 360 540 S 600 660, 840 560', 13],
+      ['var(--m-power)', 'M-40 760 C 160 720, 260 650, 420 680 S 660 780, 840 700', 17],
+      ['var(--m-telecom)', 'M-40 600 C 140 560, 250 450, 400 470 S 640 580, 840 470', 11],
+      ['var(--m-gas)', 'M-40 830 C 180 800, 300 760, 460 790 S 700 860, 840 820', 19],
+      ['var(--m-sewer)', 'M-40 520 C 100 500, 240 380, 380 400 S 620 500, 840 380', 15],
+    ];
+    const root = svg('svg', { class: 'auth-flow', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMax slice', 'aria-hidden': 'true', focusable: 'false' },
+      svg('defs', null, svg('radialGradient', { id: 'af-glow', cx: '50%', cy: '50%', r: '50%' }, svg('stop', { offset: '0%', 'stop-color': '#5CC8FF', 'stop-opacity': '.35' }), svg('stop', { offset: '100%', 'stop-color': '#5CC8FF', 'stop-opacity': '0' }))),
+      svg('circle', { class: 'af-glow g1', cx: 620, cy: 220, r: 260, fill: 'url(#af-glow)' }),
+      svg('circle', { class: 'af-glow g2', cx: 140, cy: 420, r: 200, fill: 'url(#af-glow)' }),
+      lines.map(([c, d, sp], i) => svg('g', { class: 'af-line', style: `--c: ${c}; --sp: ${sp}s; --dl: ${-i * 2.3}s` },
+        svg('path', { class: 'af-base', d }), svg('path', { class: 'af-flow', d }))),
+      [[360, 540], [420, 680], [400, 470], [460, 790], [380, 400], [600, 640], [640, 560]].map(([x, y], i) => svg('circle', { class: 'af-node', cx: x, cy: y, r: 6, style: `--dl: ${i * 0.7}s` })));
+    return root;
+  }
   function authShell(formContent) {
-    const art = h('section', { class: 'auth-art', 'aria-label': 'אודות המערכת' },
-      h('div', null, h('img', { class: 'auth-logo', src: logoUrl(), alt: S.logo ? `לוגו ${S.org}` : '', height: 56 })),
+    const art = h('section', { class: 'auth-art', 'aria-label': 'אודות המערכת' }, authBackdrop(),
+      h('div', { class: 'auth-art-top' }, h('span', { class: 'auth-org' }, S.org || '')),
       h('div', null,
         h('h1', null, S.title || 'מערכת תיאום הנדסי'),
         h('p', null, 'בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה – כל גורמי התשתית על אותו מסלול, וכל אחד רואה מה ממתין לו.'),
         h('div', { class: 'auth-lines', 'aria-hidden': 'true' },
           [['m-water', 'מים וביוב'], ['m-power', 'חשמל'], ['m-telecom', 'תקשורת'], ['m-gas', 'גז'], ['m-sewer', 'ניקוז ונוף']].map(([c, l]) => h('span', null, h('i', { class: 'mark ' + c }), l)))),
-      h('div', { class: 'small' }, S.org || ''));
-    root.replaceChildren(h('div', { class: 'auth' }, art, h('main', { class: 'auth-form', id: 'main' }, h('div', { class: 'box' }, formContent))));
+      h('div'));
+    const logo = h('div', { class: 'auth-logo-wrap' }, h('img', { class: 'auth-logo' + (S.logo ? '' : ' default'), src: logoUrl(), alt: S.logo ? `לוגו ${S.org}` : '' }));
+    root.replaceChildren(h('div', { class: 'auth' }, art, h('main', { class: 'auth-form', id: 'main' }, h('div', { class: 'box' }, logo, formContent))));
   }
   function authLinks() {
     return h('div', { class: 'links' }, h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'מדיניות פרטיות'));
@@ -342,7 +362,7 @@
       for (const [href, label, ic] of items) nav.append(h('a', { href, 'data-href': href, title: label }, icon(ic), h('span', { class: 'lbl' }, label)));
     }
     const sidebar = h('aside', { class: 'sidebar', id: 'sidebar', 'aria-label': 'תפריט' },
-      h('div', { class: 'brand' }, h('img', { class: 'brand-mark' + (S.logo ? ' custom' : ''), src: logoUrl(), alt: '' }),
+      h('div', { class: 'brand' + (S.logo ? ' has-logo' : '') }, h('img', { class: 'brand-mark' + (S.logo ? ' custom' : ''), src: logoUrl(), alt: S.logo ? `לוגו ${S.org}` : '' }),
         h('div', { class: 'brand-text' }, h('div', { class: 'brand-title' }, S.title), h('div', { class: 'brand-org' }, S.org))),
       nav, h('div', { class: 'side-foot' }, h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'פרטיות')));
     const bellCount = h('span', { class: 'badge-dot', hidden: !S.unread }, String(S.unread || ''));
@@ -850,7 +870,7 @@
   }
 
   // ---------- תצוגת בקשה ----------
-  const ROUTE_STEPS = ['draft', 'submitted', 'review', 'coordination', 'approved', 'closed'];
+  const ROUTE_STEPS = ['draft', 'submitted', 'review', 'coordination', 'pending_admin', 'approved', 'closed'];
   function routeLine(r) {
     let idx = ROUTE_STEPS.indexOf(r.status);
     const off = ['returned', 'rejected'].includes(r.status);
@@ -869,7 +889,7 @@
     const r = d.request;
     const reload = () => viewRequest(main, q, id);
     const actions = [];
-    const TR_LABEL = { submitted: 'הגשה', review: 'העברה לבדיקה', coordination: 'העברה לתיאום גורמים', returned: 'החזרה לתיקון', approved: 'מתן אישור', rejected: 'דחייה', closed: 'סגירה' };
+    const TR_LABEL = { submitted: 'הגשה', review: 'העברה לבדיקה', coordination: 'החזרה לתיאום גורמים', pending_admin: 'העברה לאישור מנהל המערכת', returned: 'החזרה לתיקון', approved: 'אישור סופי', rejected: 'דחייה', closed: 'סגירת הבקשה' };
     for (const to of d.transitions) {
       actions.push(h('button', { class: 'btn ' + (to === 'approved' ? 'primary' : to === 'rejected' || to === 'returned' ? 'danger' : ''), type: 'button',
         onclick: () => statusDialog(r, to, TR_LABEL[to] || ST(to), reload) }, TR_LABEL[to] || ST(to)));
@@ -891,6 +911,7 @@
       h('dt', null, 'מגיש'), h('dd', null, r.applicant_name),
       h('dt', null, 'גורם מטפל'), h('dd', null, r.assignee_name || 'טרם הוקצה', d.can.assign ? [' ', h('button', { class: 'btn sm', type: 'button', onclick: () => assignDialog(r, reload) }, r.assignee_name ? 'שינוי' : 'הקצאה')] : null),
       h('dt', null, 'פרויקט'), h('dd', null, r.project_id ? h('a', { href: `#/projects/${r.project_id}` }, r.project_name) : '—'),
+      h('dt', null, 'משתמשים משויכים'), h('dd', null, d.members.length ? d.members.map(m => m.full_name).join(', ') : '—'),
       h('dt', null, 'כתובת'), h('dd', null, r.address || '—'),
       h('dt', null, 'גוש / חלקה'), h('dd', null, h('span', { class: 'num' }, [r.gush, r.helka].filter(Boolean).join(' / ') || '—')),
       h('dt', null, 'מועדי עבודה'), h('dd', null, r.planned_start ? `${fmtDate(r.planned_start)} – ${fmtDate(r.planned_end)}` : '—'),
@@ -912,7 +933,7 @@
       })) : h('p', { class: 'muted' }, d.can.assign ? 'עדיין לא נבחרו גורמי תשתית לבקשה.' : 'גורמי התשתית ייקבעו על ידי הגורם המטפל.'));
 
     // מסמכים
-    const docs = docsPanel(d.documents, { request_id: id }, d.can.upload, reload);
+    const docs = docsPanel(d.documents, { request_id: id }, d.can.upload, reload, d.docsOwnOnly);
 
     // היסטוריה + הערה
     const cErr = errBox();
@@ -993,7 +1014,7 @@
   }
 
   // ---------- מסמכים ----------
-  function docsPanel(docs, target, canUpload, reload) {
+  function docsPanel(docs, target, canUpload, reload, ownOnly) {
     const list = h('ul', { class: 'files' }, docs.map(f => h('li', null,
       h('span', { class: 'fname' }, f.original_name), h('span', { class: 'small muted' }, `${fmtSize(f.size)} · ${f.uploaded_by_name} · ${fmtDate(f.created_at)}`),
       can('files.download') ? h('a', { class: 'btn sm', href: `/api/documents/${f.id}/download`, 'aria-label': `הורדת ${f.original_name}` }, icon('download'), 'הורדה') : null,
@@ -1001,7 +1022,9 @@
         if (!(await confirmDlg('מחיקת קובץ', `למחוק את "${f.original_name}"?`, 'מחיקה', true))) return;
         try { await api('DELETE', `/api/documents/${f.id}`); toast('הקובץ נמחק'); reload(); } catch (ex) { toast(ex.message, true); }
       } }, icon('trash')) : null)));
-    const panel = h('section', { class: 'panel', 'aria-labelledby': 'docs-h' }, h('h2', { id: 'docs-h' }, 'מסמכים'), docs.length ? list : h('p', { class: 'muted' }, 'לא צורפו מסמכים.'));
+    const panel = h('section', { class: 'panel', 'aria-labelledby': 'docs-h' }, h('h2', { id: 'docs-h' }, 'מסמכים'),
+      ownOnly ? h('p', { class: 'small muted' }, 'מוצגים רק המסמכים שהעלית. מנהל המערכת רואה את כל המסמכים.') : null,
+      docs.length ? list : h('p', { class: 'muted' }, ownOnly ? 'לא העלית מסמכים לבקשה זו.' : 'לא צורפו מסמכים.'));
     if (canUpload) panel.append(uploader(target, reload));
     return panel;
   }
@@ -1031,7 +1054,7 @@
     return zone;
   }
   async function viewDocuments(main) {
-    const { items } = await api('GET', '/api/documents');
+    const { items, ownOnly } = await api('GET', '/api/documents');
     let filter = '';
     const box = h('div');
     const draw = () => {
@@ -1047,7 +1070,7 @@
     const search = h('input', { type: 'search', id: 'dsearch', placeholder: 'שם קובץ, מספר בקשה או פרויקט', maxlength: 100 });
     search.addEventListener('input', () => { filter = search.value.trim().toLowerCase(); draw(); });
     draw();
-    main.replaceChildren(pageHead('מסמכים', 'כל הקבצים שיש לך הרשאה לראות. הקבצים נשמרים בשרת ומגובים אוטומטית.'), h('div', { class: 'toolbar' }, h('div', { class: 'field grow' }, h('label', { for: 'dsearch' }, 'חיפוש'), search)), box);
+    main.replaceChildren(pageHead('מסמכים', ownOnly ? 'המסמכים שהעלית. מנהל המערכת רואה את כל המסמכים במערכת.' : 'כל הקבצים שיש לך הרשאה לראות. הקבצים נשמרים בשרת ומגובים אוטומטית.'), h('div', { class: 'toolbar' }, h('div', { class: 'field grow' }, h('label', { for: 'dsearch' }, 'חיפוש'), search)), box);
   }
 
   // ---------- פרויקטים ----------
@@ -1350,18 +1373,19 @@
 
   // ---------- ניהול: משתמשים ----------
   async function viewAdminUsers(main) {
-    const [{ items, roles }, infra] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/infra')]);
+    const [{ items, roles, requests }, infra] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/infra')]);
     const roleName = Object.fromEntries(roles.map(r => [r.id, r.name]));
     const reload = () => viewAdminUsers(main);
-    main.replaceChildren(pageHead('משתמשים', `${items.length} משתמשים. משתמש חדש יתבקש להחליף סיסמה בכניסה הראשונה.`, h('button', { class: 'btn primary', type: 'button', onclick: () => userDialog(null, roles, infra.items, reload) }, icon('plus'), 'משתמש חדש')),
+    main.replaceChildren(pageHead('משתמשים', `${items.length} משתמשים. משתמש חדש יתבקש להחליף סיסמה בכניסה הראשונה.`, h('button', { class: 'btn primary', type: 'button', onclick: () => userDialog(null, roles, infra.items, reload, requests) }, icon('plus'), 'משתמש חדש')),
       tableOf([
         { label: 'שם', render: u => h('span', null, u.full_name, h('div', { class: 'small muted ltr' }, u.username)) },
         { label: 'תפקיד', render: u => roleName[u.role_id] + (u.perm_grant.length || u.perm_deny.length ? ' (+התאמות)' : '') },
         { label: 'גורם תשתית', render: u => (infra.items.find(b => b.id === u.infra_body_id) || {}).name || '—' },
+        { label: 'בקשות', render: u => u.requests.length ? h('span', { class: 'ltr small' }, u.requests.slice(0, 3).map(x => x.number).join(', ') + (u.requests.length > 3 ? ` +${u.requests.length - 3}` : '')) : '—' },
         { label: 'מצב', render: u => !u.active ? h('span', { class: 'chip st-rejected' }, 'מושבת') : u.locked ? h('span', { class: 'chip st-returned' }, 'נעול') : h('span', { class: 'chip st-approved' }, 'פעיל') },
         { label: 'כניסה אחרונה', render: u => fmtDateTime(u.last_login) },
         { label: 'פעולות', render: u => h('span', { style: { display: 'flex', gap: '6px', 'flex-wrap': 'wrap' } },
-          h('button', { class: 'btn sm', type: 'button', onclick: () => userDialog(u, roles, infra.items, reload) }, 'עריכה'),
+          h('button', { class: 'btn sm', type: 'button', onclick: () => userDialog(u, roles, infra.items, reload, requests) }, 'עריכה'),
           h('button', { class: 'btn sm', type: 'button', onclick: () => passwordDialog(u) }, 'שינוי סיסמה'),
           h('button', { class: 'btn sm', type: 'button', onclick: () => resetLink(u) }, 'קישור איפוס'),
           u.locked ? h('button', { class: 'btn sm', type: 'button', onclick: async () => { await api('POST', `/api/admin/users/${u.id}/unlock`, {}); toast('החשבון שוחרר'); reload(); } }, 'שחרור נעילה') : null,
@@ -1393,9 +1417,21 @@
         [h('button', { class: 'btn primary', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(r.link); toast('הקישור הועתק'); } catch { input.select(); } } }, 'העתקה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'סגירה')]);
     } catch (ex) { toast(ex.message, true); }
   }
-  async function userDialog(u, roles, infra, done) {
+  async function userDialog(u, roles, infra, done, requests = []) {
     const perms = can('admin.roles') ? (await api('GET', '/api/admin/permissions')).items : [];
-    u = u || { perm_grant: [], perm_deny: [], active: true };
+    u = u || { perm_grant: [], perm_deny: [], active: true, requests: [] };
+    // שיוך לבקשות: חובה לבחור בקשה אחת לפחות או "ללא שיוך לבקשה"
+    const linked = new Set((u.requests || []).map(x => x.id));
+    const noneBox = h('input', { type: 'checkbox', id: 'no-req', checked: !!u.id && !linked.size });
+    const reqSearch = h('input', { type: 'search', id: 'req-search', placeholder: 'חיפוש לפי מספר או נושא', maxlength: 60 });
+    const reqList = h('div', { class: 'req-pick-list', role: 'group', 'aria-label': 'בקשות לשיוך' }, requests.map(r => h('label', { class: 'check', 'data-q': `${r.number} ${r.title}`.toLowerCase() },
+      h('input', { type: 'checkbox', name: 'rq', value: r.id, checked: linked.has(r.id), onchange: () => { if (reqList.querySelector('input:checked')) noneBox.checked = false; } }), h('span', { class: 'ltr' }, r.number), ' ', r.title)));
+    noneBox.addEventListener('change', () => { if (noneBox.checked) reqList.querySelectorAll('input').forEach(i => { i.checked = false; }); });
+    reqSearch.addEventListener('input', () => { const q = reqSearch.value.trim().toLowerCase(); for (const l of reqList.children) l.hidden = !!q && !l.dataset.q.includes(q); });
+    const reqPicker = h('fieldset', { id: 'req-fs' }, h('legend', null, 'שיוך לבקשה ', h('span', { class: 'req-mark', 'aria-hidden': 'true' }, '*'), h('span', { class: 'sr-only' }, '(חובה)')),
+      h('p', { class: 'small muted', style: { margin: '0 0 6px' } }, 'המשתמש יראה את הבקשות שמסמנים כאן. חובה לבחור לפחות אחת, או לסמן "ללא שיוך לבקשה".'),
+      h('label', { class: 'check' }, noneBox, 'ללא שיוך לבקשה'),
+      requests.length ? [h('label', { for: 'req-search', class: 'sr-only' }, 'חיפוש בקשה'), reqSearch, reqList] : h('p', { class: 'small muted' }, 'אין עדיין בקשות במערכת.'));
     const err = errBox();
     const form = h('form', { novalidate: true }, err,
       h('div', { class: 'row' }, field('שם מלא', inp('full_name', { value: u.full_name || '', maxlength: 100 }), { required: true }),
@@ -1403,7 +1439,9 @@
       h('div', { class: 'row' }, field('דוא"ל', inp('email', { type: 'email', value: u.email || '', maxlength: 200, dir: 'ltr' })), field('טלפון', inp('phone', { type: 'tel', value: u.phone || '', maxlength: 30, dir: 'ltr' }))),
       h('div', { class: 'row' }, field('מחלקה', inp('department', { value: u.department || '', maxlength: 100 })),
         field('תפקיד', sel('role_id', [['', 'בחרו'], ...roles.map(r => [r.id, r.name])], u.role_id, { disabled: u.id && !can('admin.roles') }), { required: true })),
-      field('שיוך לגורם תשתית', sel('infra_body_id', [['', 'ללא'], ...infra.map(b => [b.id, b.name])], u.infra_body_id), { hint: 'משתמש משויך יוכל לתת חוות דעת בשם הגורם.' }),
+      field('שיוך לגורם תשתית', sel('infra_choice', [['', 'בחרו גורם'], ['none', 'לא משויך לגורם (עובד המינהל / מבקש)'], ...infra.filter(b => b.active || b.id === u.infra_body_id).map(b => [b.id, b.name])],
+        u.id ? (u.infra_body_id || 'none') : ''), { required: true, hint: 'משתמש משויך יוכל לתת חוות דעת בשם הגורם.' }),
+      reqPicker,
       u.id ? null : field('סיסמה ראשונית', inp('password', { type: 'password', minlength: 12, maxlength: 128, autocomplete: 'new-password', dir: 'ltr' }), { required: true, hint: 'לפחות 12 תווים. המשתמש יחליף אותה בכניסה הראשונה.' }),
       u.id ? h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'active', checked: u.active }), 'משתמש פעיל') : null,
       perms.length ? h('details', null, h('summary', { style: { cursor: 'pointer', 'font-weight': '650', padding: '8px 0' } }, 'התאמת הרשאות פרטנית למשתמש'),
@@ -1414,7 +1452,12 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); if (!validate(form, err)) return;
       const data = {};
-      for (const el of form.elements) if (el.name && !el.name.startsWith('pt-') && !el.disabled) data[el.name] = el.type === 'checkbox' ? el.checked : (el.value.trim() || null);
+      for (const el of form.elements) if (el.name && !el.name.startsWith('pt-') && !['rq', 'infra_choice'].includes(el.name) && !el.disabled) data[el.name] = el.type === 'checkbox' ? el.checked : (el.value.trim() || null);
+      const ic = form.infra_choice.value;
+      if (ic === 'none') data.no_infra = true; else data.infra_body_id = Number(ic);
+      const rq = [...form.querySelectorAll('input[name=rq]:checked')].map(i => Number(i.value));
+      if (rq.length) data.request_ids = rq; else if (noneBox.checked) data.no_request = true;
+      else { reqPicker.setAttribute('aria-invalid', 'true'); noneBox.focus(); return showErr(err, 'נא לשייך את המשתמש לבקשה, או לסמן "ללא שיוך לבקשה".'); }
       if (perms.length) { data.perm_grant = []; data.perm_deny = []; for (const s of form.querySelectorAll('[data-perm]')) { if (s.value === 'grant') data.perm_grant.push(s.dataset.perm); if (s.value === 'deny') data.perm_deny.push(s.dataset.perm); } }
       try { await api(u.id ? 'PUT' : 'POST', u.id ? `/api/admin/users/${u.id}` : '/api/admin/users', data); m.close(); toast('המשתמש נשמר'); done(); } catch (ex) { showErr(err, ex.message); }
     });
@@ -1533,10 +1576,13 @@
       tags, h('div', { class: 'toolbar', style: { 'margin-top': '12px' } }, h('div', { class: 'field' }, h('label', { for: 'addext' }, 'הוספת סיומת'), addInput, datalist), addBtn), addErr,
       field('גודל קובץ מרבי (MB)', inp('max_mb', { type: 'number', min: 1, max: s.hard_max_mb, value: s.max_mb }), { required: true, hint: `תקרה קשיחה בשרת: ${s.hard_max_mb}MB.` }),
       h('details', null, h('summary', { style: { cursor: 'pointer' } }, 'סיומות שתמיד חסומות'), h('p', { class: 'small muted ltr' }, s.forbidden_ext.join(', '))),
+      h('fieldset', { style: { 'margin-top': '14px' } }, h('legend', null, 'מי רואה מסמכים'),
+        h('label', { class: 'check' }, h('input', { type: 'radio', name: 'docs_visibility', value: 'own', checked: s.docs_visibility === 'own' }), 'כל משתמש רואה רק את המסמכים שהעלה. מנהל המערכת רואה הכל.'),
+        h('label', { class: 'check' }, h('input', { type: 'radio', name: 'docs_visibility', value: 'request', checked: s.docs_visibility === 'request' }), 'כל מי שרשאי לראות בקשה רואה את כל המסמכים שלה.')),
       h('button', { class: 'btn primary', type: 'submit', style: { 'margin-top': '12px' } }, 'שמירת הגדרות קבצים'));
     files.addEventListener('submit', async (e) => {
       e.preventDefault(); if (!validate(files, fErr)) return;
-      try { await api('PUT', '/api/admin/settings', { allowed_ext: ext, max_mb: files.max_mb.value }); toast('הגדרות הקבצים נשמרו'); await refreshMe(); reload(); } catch (ex) { showErr(fErr, ex.message); }
+      try { await api('PUT', '/api/admin/settings', { allowed_ext: ext, max_mb: files.max_mb.value, docs_visibility: files.querySelector('[name=docs_visibility]:checked').value }); toast('הגדרות הקבצים נשמרו'); await refreshMe(); reload(); } catch (ex) { showErr(fErr, ex.message); }
     });
     const gErr = errBox();
     const general = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'כללי ומסלולי טיפול'), gErr,

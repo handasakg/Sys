@@ -82,7 +82,7 @@ class Client {
     const infra = (await admin.req('GET', '/api/infra')).data.items;
     for (const [u, role, extra] of [['applA', 'מבקש / יזם'], ['applB', 'מבקש / יזם'], ['eng', 'מהנדס / מאשר'], ['water', 'גורם תשתית', { infra_body_id: infra[0].id }]]) {
       const p = pw();
-      const cr = await admin.req('POST', '/api/admin/users', { username: u, full_name: 'משתמש ' + u, role_id: roleId(role), password: p, ...(extra || {}) });
+      const cr = await admin.req('POST', '/api/admin/users', { username: u, full_name: 'משתמש ' + u, role_id: roleId(role), password: p, no_request: true, ...(extra || { no_infra: true }) });
       const c = new Client(base); const lr = await c.login(u, p);
       // שינוי סיסמה ראשונית
       const np = pw();
@@ -208,19 +208,30 @@ class Client {
     await E.req('POST', `/api/requests/${reqId}/status`, { status: 'review' });
     await E.req('POST', `/api/requests/${reqId}/approvals`, { infra_body_ids: [infra[0].id, infra[1].id] });
     await E.req('POST', `/api/requests/${reqId}/status`, { status: 'coordination' });
-    r = await E.req('POST', `/api/requests/${reqId}/status`, { status: 'approved' });
-    rec('תהליך', 'אישור סופי חסום כל עוד גורמי תשתית לא אישרו', r.status === 400, r.data.error);
+    r = await E.req('POST', `/api/requests/${reqId}/status`, { status: 'pending_admin' });
+    rec('תהליך', 'העברה לאישור מנהל חסומה כל עוד גורמי תשתית לא אישרו', r.status === 400, r.data.error);
     const det = (await users.water.c.req('GET', `/api/requests/${reqId}`)).data;
     const myAppr = det.approvals.find(a => a.infra_body_id === infra[0].id); const otherAppr = det.approvals.find(a => a.infra_body_id === infra[1].id);
     r = await users.water.c.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
     rec('הרשאות', 'גורם תשתית לא יכול להחליט בשם גורם אחר', r.status === 403);
     r = await users.water.c.req('POST', `/api/approvals/${myAppr.id}/decide`, { decision: 'approved' });
-    await E.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'conditions', comment: 'עבודה בלילה בלבד' });
+    r = await E.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
+    rec('אישור מנהל', 'מהנדס לא יכול לתת חוות דעת בשם גורם תשתית (רק הגורם עצמו או מנהל המערכת)', r.status === 403);
+    await admin.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'conditions', comment: 'עבודה בלילה בלבד' });
+    rec('תהליך', 'אישור "בתנאים" אינו נחשב אישור מלא – הבקשה נשארת בתיאום', db.prepare('SELECT status FROM requests WHERE id = ?').get(reqId).status === 'coordination');
+    r = await admin.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
+    const st1 = db.prepare('SELECT status FROM requests WHERE id = ?').get(reqId).status;
+    rec('אישור מנהל', 'כשהגורם האחרון מאשר – הבקשה עוברת אוטומטית ל"ממתינה לאישור מנהל המערכת"', r.data.advanced === true && st1 === 'pending_admin', st1);
+    rec('אישור מנהל', 'מנהל המערכת מקבל התראה על הבקשה שממתינה לו', !!db.prepare("SELECT 1 FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'chief' AND n.text LIKE '%ממתינה לאישורך%'").get());
     r = await E.req('POST', `/api/requests/${reqId}/status`, { status: 'approved' });
-    rec('תהליך', 'אישור "בתנאים" אינו נחשב אישור מלא', r.status === 400);
-    await E.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
-    r = await E.req('POST', `/api/requests/${reqId}/status`, { status: 'approved', comment: 'מאושר לביצוע' });
-    rec('תהליך', 'מסלול מלא: הגשה ← בדיקה ← תיאום ← אישורי גורמים ← אישור', r.status === 200);
+    const r2b = await A.req('POST', `/api/requests/${reqId}/status`, { status: 'approved' });
+    rec('אישור מנהל', 'מהנדס ומבקש לא יכולים לאשר סופית (רק מנהל המערכת)', r.status === 403 && (r2b.status === 403 || r2b.status === 400), `${r.status}/${r2b.status} ${r.data.error}`);
+    const pend = await admin.req('GET', '/api/requests?scope=pending_me');
+    rec('אישור מנהל', 'הבקשה מופיעה למנהל ב"ממתין לטיפולי"', pend.data.items.some(x => x.id === reqId));
+    r = await admin.req('POST', `/api/requests/${reqId}/status`, { status: 'approved', comment: 'מאושר לביצוע' });
+    rec('תהליך', 'מסלול מלא: הגשה ← בדיקה ← תיאום ← אישורי גורמים ← אישור מנהל המערכת', r.status === 200);
+    r = await E.req('POST', `/api/requests/${reqId}/status`, { status: 'closed' });
+    rec('אישור מנהל', 'רק מנהל המערכת סוגר בקשה', r.status === 403);
     r = await A.req('GET', '/api/notifications');
     rec('תהליך', 'המגיש מקבל התראות על שינויי סטטוס', r.data.items.length >= 3, r.data.items.length + ' התראות');
 
@@ -234,7 +245,7 @@ class Client {
     // ---------- זכור אותי ----------
     {
       const rp = pw();
-      await admin.req('POST', '/api/admin/users', { username: 'remem', full_name: 'זכור', role_id: roleId('מבקש / יזם'), password: rp });
+      await admin.req('POST', '/api/admin/users', { username: 'remem', full_name: 'זכור', role_id: roleId('מבקש / יזם'), password: rp, no_request: true, no_infra: true });
       const rid2 = db.prepare("SELECT id FROM users WHERE username='remem'").get().id;
       db.prepare('UPDATE users SET must_change_pw = 0 WHERE id = ?').run(rid2);
       const c1 = new Client(base); const l1 = await c1.req('POST', '/api/auth/login', { username: 'remem', password: rp, remember: true }); c1.csrf = l1.data.csrf;
@@ -276,13 +287,13 @@ class Client {
       await admin.req('PUT', `/api/admin/users/${users.eng.id}`, { perm_grant: [] });
       const e2 = new Client(base); const e2l = await e2.login('eng', users.eng.p); e2.csrf = e2l.data.csrf; users.eng.c = e2; void um;
     }
-    const E2 = users.eng.c; const A2 = users.applA.c;
+    const E2 = users.eng.c; const A2 = users.applA.c; let n2Id;
 
     // ---------- מספור בקשות ----------
     {
       r = await admin.req('PUT', '/api/admin/settings', { req_prefix: 'BD', req_with_year: false, req_pad: 3, req_next: 50 });
       const n1 = (await A2.req('POST', '/api/requests', { type: 'planning', title: 'מספור 1', submit: true })).data.number;
-      const n2 = (await A2.req('POST', '/api/requests', { type: 'planning', title: 'מספור 2', submit: true })).data;
+      const n2 = (await A2.req('POST', '/api/requests', { type: 'planning', title: 'מספור 2', submit: true })).data; n2Id = n2.id;
       rec('מספור בקשות', 'הגדרת קידומת, ספרות ומספר התחלה: BD-050 ואז BD-051', n1 === 'BD-050' && n2.number === 'BD-051', `${n1}, ${n2.number}`);
       r = await admin.req('PUT', '/api/admin/settings', { req_prefix: '<script>' });
       rec('מספור בקשות', 'קידומת עם תווים לא חוקיים נדחית', r.status === 400);
@@ -326,6 +337,47 @@ class Client {
       rec('לוגו', 'לוגו תקין עולה, ומוגש גם לפני התחברות (למסך הכניסה) כ-image/png עם nosniff', r.status === 200 && lg.status === 200 && lg.headers.get('content-type') === 'image/png' && lg.headers.get('x-content-type-options') === 'nosniff' && !!me0.data.logo);
       await admin.req('DELETE', '/api/admin/logo');
       rec('לוגו', 'הסרת לוגו מחזירה את סמל ברירת המחדל', (await fetch(base + '/api/logo')).status === 404);
+    }
+
+    // ---------- משתמש חדש: שדות חובה ושיוך לבקשה ----------
+    {
+      const base0 = { full_name: 'בודק', role_id: roleId('מבקש / יזם'), password: pw() };
+      const e1 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need1', no_request: true });
+      const e2 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need2', no_infra: true });
+      const e3 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need3', role_id: null, no_infra: true, no_request: true });
+      rec('משתמש חדש', 'גורם תשתית, שיוך לבקשה ותפקיד הם שדות חובה', e1.status === 400 && e2.status === 400 && e3.status === 400, [e1.data.error, e2.data.error].join(' | '));
+      const lp2 = pw();
+      const cr = await admin.req('POST', '/api/admin/users', { ...base0, username: 'linked', password: lp2, infra_body_id: infra[3].id, request_ids: [reqId] });
+      db.prepare('UPDATE users SET must_change_pw = 0 WHERE id = ?').run(cr.data.id);
+      const lc = new Client(base); const ll = await lc.login('linked', lp2); lc.csrf = ll.data.csrf;
+      const seen = await lc.req('GET', `/api/requests/${reqId}`);
+      const notSeen = await lc.req('GET', `/api/requests/${n2Id}`);
+      rec('משתמש חדש', 'משתמש ששויך לבקשה רואה אותה (ורק אותה)', cr.status === 201 && seen.status === 200 && notSeen.status === 404);
+      const list = (await admin.req('GET', '/api/admin/users')).data.items.find(u => u.username === 'linked');
+      rec('משתמש חדש', 'השיוך לבקשה ולגורם נשמר ומוצג ברשימת המשתמשים', list.requests.some(x => x.id === reqId) && list.infra_body_id === infra[3].id);
+    }
+
+    // ---------- מסמכים: כל אחד רואה רק את שלו ----------
+    {
+      const fd = new FormData(); fd.append('request_id', String(reqId)); fd.append('file', new Blob([Buffer.from('%PDF-1.4\n%%EOF')]), 'eng-plan.pdf');
+      const ed = await E2.req('POST', '/api/documents', fd);
+      const fd2 = new FormData(); fd2.append('request_id', String(reqId)); fd2.append('file', new Blob([Buffer.from('%PDF-1.4\n%%EOF')]), 'appl-plan.pdf');
+      await A2.req('POST', '/api/documents', fd2);
+      const engView = await E2.req('GET', `/api/requests/${reqId}`);
+      const applView = await A2.req('GET', `/api/requests/${reqId}`);
+      const adminView = await admin.req('GET', `/api/requests/${reqId}`);
+      const names = (x) => x.data.documents.map(d => d.original_name);
+      rec('מסמכים', 'כל משתמש רואה רק את המסמכים שהעלה; מנהל המערכת רואה את כולם',
+        names(engView).every(n => n === 'eng-plan.pdf') && !names(applView).includes('eng-plan.pdf') && names(applView).includes('appl-plan.pdf') && names(adminView).includes('eng-plan.pdf') && names(adminView).includes('appl-plan.pdf'),
+        `מהנדס: ${names(engView).length}, מבקש: ${names(applView).length}, מנהל: ${names(adminView).length}`);
+      const steal = await A2.req('GET', `/api/documents/${ed.data.id}/download`);
+      rec('מסמכים', 'הורדה ישירה של מסמך של משתמש אחר נחסמת (404)', steal.status === 404);
+      const allDocs = await E2.req('GET', '/api/documents');
+      rec('מסמכים', 'גם במסך "מסמכים" מופיעים רק המסמכים שלי', allDocs.data.items.every(d => d.uploaded_by === users.eng.id));
+      await admin.req('PUT', '/api/admin/settings', { docs_visibility: 'request' });
+      const shared = await E2.req('GET', `/api/requests/${reqId}`);
+      rec('מסמכים', 'מתג בהגדרות: "כל מי שרואה את הבקשה רואה את המסמכים" עובד', names(shared).includes('appl-plan.pdf'));
+      await admin.req('PUT', '/api/admin/settings', { docs_visibility: 'own' });
     }
 
     // ---------- SQL Injection ----------
@@ -412,7 +464,7 @@ class Client {
 
     // ---------- סשן ----------
     const L = new Client(base); const lp = pw();
-    await admin.req('POST', '/api/admin/users', { username: 'sess', full_name: 'סשן', role_id: roleId('מבקש / יזם'), password: lp });
+    await admin.req('POST', '/api/admin/users', { username: 'sess', full_name: 'סשן', role_id: roleId('מבקש / יזם'), password: lp, no_request: true, no_infra: true });
     await L.login('sess', lp); const oldCookie = L.cookie;
     await L.req('POST', '/api/auth/logout', {});
     const replay = new Client(base); replay.cookie = oldCookie;

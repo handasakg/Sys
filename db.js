@@ -124,6 +124,11 @@ if (db.prepare('SELECT COUNT(*) AS c FROM infra_bodies').get().c === 0) {
   for (const n of ['מים וביוב (תאגיד)', 'חברת החשמל', 'בזק / תקשורת', 'גז', 'תנועה ותחבורה', 'ניקוז', 'גנים ונוף', 'תאורת רחובות']) ins.run(n);
 }
 
+// שיוך משתמשים לבקשות (משתמש משויך רואה את הבקשה)
+db.exec(`CREATE TABLE IF NOT EXISTS user_requests (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, request_id))`);
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('docs.visibility', 'own')").run();
 // הרחבות סכמה למסדים קיימים
 const hasCol = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some(x => x.name === c);
 if (!hasCol('sessions', 'remember')) db.exec('ALTER TABLE sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 0');

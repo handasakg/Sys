@@ -47,6 +47,9 @@ function notifyPerm(perm, text, link, exceptId) {
     if (u.id !== exceptId && auth.effectivePerms(u).has(perm)) notify(u.id, text, link);
   }
 }
+function notifySysAdmins(text, link, exceptId) {
+  for (const u of db.prepare('SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE u.active = 1 AND r.system = 1').all()) if (u.id !== exceptId) notify(u.id, text, link);
+}
 function history(requestId, userId, action, details) {
   db.prepare('INSERT INTO request_history (request_id, user_id, action, details) VALUES (?, ?, ?, ?)')
     .run(requestId, userId, action, details ? String(details).slice(0, 2000) : null);
@@ -189,11 +192,23 @@ function loadRequest(id) {
   if (!r) throw new HttpError(404, 'הבקשה לא נמצאה');
   return r;
 }
+// מנהל המערכת = משתמש בתפקיד המערכת (לא הרשאה שאפשר להעניק בנפרד)
+function isSysAdmin(req) {
+  if (!req.user) return false;
+  if (req.user._sys === undefined) req.user._sys = !!db.prepare('SELECT system FROM roles WHERE id = ?').get(req.user.role_id)?.system;
+  return req.user._sys;
+}
+function allowed(req, r, need) {
+  if (need === 'applicant') return r.applicant_id === req.user.id || can(req, 'requests.edit_all');
+  if (need === 'sysadmin') return isSysAdmin(req);
+  return can(req, need);
+}
 function canViewRequest(req, r) {
   const u = req.user;
-  if (u.perms.has('requests.view_all')) return true;
+  if (u.perms.has('requests.view_all') || isSysAdmin(req)) return true;
   if (!u.perms.has('requests.view_own') && !u.perms.has('approvals.decide')) return false;
   if (r.applicant_id === u.id || r.assignee_id === u.id) return true;
+  if (db.prepare('SELECT 1 FROM user_requests WHERE user_id = ? AND request_id = ?').get(u.id, r.id)) return true;
   if (u.infra_body_id && db.prepare('SELECT 1 FROM request_approvals WHERE request_id = ? AND infra_body_id = ?').get(r.id, u.infra_body_id)) return true;
   return false;
 }
@@ -254,11 +269,11 @@ route('GET', '/api/requests', (req) => {
   if (scope === 'mine') { where.push('r.applicant_id = ?'); params.push(u.id); }
   else if (scope === 'assigned') { where.push('r.assignee_id = ?'); params.push(u.id); }
   else if (scope === 'pending_me') {
-    where.push(`(r.assignee_id = ? AND r.status IN ('submitted','review','coordination')) OR r.id IN (SELECT request_id FROM request_approvals WHERE infra_body_id = ? AND decision = 'pending')`);
-    params.push(u.id, u.infra_body_id || -1);
+    where.push(`(r.assignee_id = ? AND r.status IN ('submitted','review','coordination')) OR r.id IN (SELECT request_id FROM request_approvals WHERE infra_body_id = ? AND decision = 'pending') OR (? = 1 AND r.status = 'pending_admin')`);
+    params.push(u.id, u.infra_body_id || -1, isSysAdmin(req) ? 1 : 0);
   } else if (!u.perms.has('requests.view_all')) {
-    where.push(`(r.applicant_id = ? OR r.assignee_id = ? OR r.id IN (SELECT request_id FROM request_approvals WHERE infra_body_id = ?))`);
-    params.push(u.id, u.id, u.infra_body_id || -1);
+    where.push(`(r.applicant_id = ? OR r.assignee_id = ? OR r.id IN (SELECT request_id FROM request_approvals WHERE infra_body_id = ?) OR r.id IN (SELECT request_id FROM user_requests WHERE user_id = ?))`);
+    params.push(u.id, u.id, u.infra_body_id || -1, u.id);
   }
   if (q.status && W.STATUSES[q.status]) { where.push('r.status = ?'); params.push(q.status); }
   if (q.type && W.TYPES[q.type]) { where.push('r.type = ?'); params.push(q.type); }
@@ -307,13 +322,13 @@ route('GET', '/api/requests/:id', (req) => {
     JOIN infra_bodies b ON b.id = ra.infra_body_id LEFT JOIN users u ON u.id = ra.decided_by WHERE ra.request_id = ? ORDER BY b.name`).all(r.id);
   const hist = db.prepare(`SELECT h.*, u.full_name AS user_name FROM request_history h LEFT JOIN users u ON u.id = h.user_id WHERE h.request_id = ? ORDER BY h.id DESC`).all(r.id);
   const docs = db.prepare(`SELECT d.id, d.original_name, d.size, d.mime, d.category, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name
-    FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.request_id = ? ORDER BY d.id DESC`).all(r.id);
+    FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.request_id = ? ORDER BY d.id DESC`).all(r.id).filter(d => canSeeDoc(req, d));
+  const members = db.prepare('SELECT u.id, u.full_name FROM user_requests ur JOIN users u ON u.id = ur.user_id WHERE ur.request_id = ? ORDER BY u.full_name').all(r.id);
   const tasks = db.prepare(`SELECT t.*, u.full_name AS assignee_name FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.request_id = ? ORDER BY t.id DESC`).all(r.id);
-  const transitions = Object.entries(W.TRANSITIONS[r.status] || {}).filter(([, perm]) =>
-    perm === 'applicant' ? (r.applicant_id === req.user.id || can(req, 'requests.edit_all')) : can(req, perm)).map(([to]) => to);
-  return { request: decorate(r), approvals, history: hist, documents: docs, tasks, transitions,
+  const transitions = Object.entries(W.TRANSITIONS[r.status] || {}).filter(([, need]) => allowed(req, r, need)).map(([to]) => to);
+  return { request: decorate(r), approvals, history: hist, documents: docs, tasks, transitions, members, docsOwnOnly: docsOwnOnly() && !isSysAdmin(req),
     can: { edit: canEditRequest(req, r), delete: can(req, 'requests.delete'), assign: can(req, 'requests.assign'),
-      approveTrack: can(req, 'requests.approve_track'), upload: can(req, 'files.upload'), decide: can(req, 'approvals.decide') } };
+      approveTrack: can(req, 'requests.approve_track'), upload: can(req, 'files.upload'), decide: can(req, 'approvals.decide'), sysadmin: isSysAdmin(req) } };
 });
 
 route('PUT', '/api/requests/:id', (req) => {
@@ -357,10 +372,10 @@ route('POST', '/api/requests/:id/status', (req) => {
   const comment = v.str(req.body.comment, { max: 2000, name: 'הערה', required: ['returned', 'rejected'].includes(to) });
   const need = (W.TRANSITIONS[r.status] || {})[to];
   if (!need) throw new HttpError(400, `לא ניתן לעבור מ"${W.STATUSES[r.status]}" ל"${W.STATUSES[to]}"`);
-  if (need === 'applicant' ? !(r.applicant_id === req.user.id || can(req, 'requests.edit_all')) : !can(req, need)) {
-    const e = new HttpError(403, 'אין הרשאה לפעולה זו'); e.permDenied = need; throw e;
+  if (!allowed(req, r, need)) {
+    const e = new HttpError(403, need === 'sysadmin' ? 'רק מנהל המערכת מאשר וסוגר בקשות' : 'אין הרשאה לפעולה זו'); e.permDenied = need; throw e;
   }
-  if (to === 'approved') {
+  if (to === 'approved' || to === 'pending_admin') {
     const pending = db.prepare("SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision != 'approved'").get(r.id).c;
     if (pending) throw new HttpError(400, 'לא ניתן לאשר: יש גורמי תשתית שטרם אישרו');
   }
@@ -373,6 +388,7 @@ route('POST', '/api/requests/:id/status', (req) => {
   if (r.applicant_id !== req.user.id) notify(r.applicant_id, `בקשה ${r.number}: ${W.STATUSES[to]}`, `#/requests/${r.id}`);
   if (r.assignee_id && r.assignee_id !== req.user.id) notify(r.assignee_id, `בקשה ${r.number}: ${W.STATUSES[to]}`, `#/requests/${r.id}`);
   if (to === 'submitted' && !r.assignee_id) notifyPerm('requests.assign', `בקשה הוגשה: ${r.number}`, `#/requests/${r.id}`, req.user.id);
+  if (to === 'pending_admin') notifySysAdmins(`בקשה ${r.number} ממתינה לאישורך הסופי`, `#/requests/${r.id}`, req.user.id);
   audit(req, 'request_status', { id: r.id, from: r.status, to });
   return { ok: true };
 });
@@ -429,8 +445,8 @@ route('POST', '/api/approvals/:id/decide', (req) => {
   requirePerm(req, 'approvals.decide');
   const a = db.prepare('SELECT * FROM request_approvals WHERE id = ?').get(req.params.id);
   if (!a) throw new HttpError(404, 'לא נמצא');
-  // גורם תשתית מחליט רק עבור הגוף שלו; מאשר סופי (final_approve) רשאי להחליט עבור כולם
-  if (req.user.infra_body_id !== a.infra_body_id && !can(req, 'requests.final_approve')) throw new HttpError(403, 'ניתן להחליט רק עבור הגוף שאליו אתה משויך');
+  // גורם תשתית מחליט רק עבור הגוף שלו; מנהל המערכת רשאי להחליט עבור כולם
+  if (req.user.infra_body_id !== a.infra_body_id && !isSysAdmin(req)) throw new HttpError(403, 'ניתן להחליט רק עבור הגוף שאליו אתה משויך');
   const decision = v.oneOf(req.body.decision, ['approved', 'rejected', 'conditions'], { required: true, name: 'החלטה' });
   const comment = v.str(req.body.comment, { max: 2000, name: 'הערה', required: decision !== 'approved' });
   const r = loadRequest(a.request_id);
@@ -442,7 +458,20 @@ route('POST', '/api/approvals/:id/decide', (req) => {
   if (r.assignee_id) notify(r.assignee_id, `${body.name} ${label} את בקשה ${r.number}`, `#/requests/${r.id}`);
   notify(r.applicant_id, `${body.name} ${label} את בקשה ${r.number}`, `#/requests/${r.id}`);
   audit(req, 'approval_decided', { approval: a.id, decision });
-  return { ok: true };
+  // כל גורמי התשתית אישרו → הבקשה עוברת אוטומטית לאישור מנהל המערכת
+  let advanced = false;
+  if (['review', 'coordination'].includes(r.status)) {
+    const left = db.prepare("SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision != 'approved'").get(r.id).c;
+    if (!left) {
+      db.prepare("UPDATE requests SET status = 'pending_admin', updated_at = ? WHERE id = ?").run(nowIso(), r.id);
+      history(r.id, null, 'כל גורמי התשתית אישרו – הבקשה הועברה אוטומטית לאישור מנהל המערכת', null);
+      notifySysAdmins(`בקשה ${r.number}: כל גורמי התשתית אישרו – ממתינה לאישורך הסופי`, `#/requests/${r.id}`);
+      notify(r.applicant_id, `בקשה ${r.number}: כל גורמי התשתית אישרו – ממתינה לאישור מנהל המערכת`, `#/requests/${r.id}`);
+      audit(req, 'request_auto_pending_admin', { id: r.id });
+      advanced = true;
+    }
+  }
+  return { ok: true, advanced };
 });
 
 route('POST', '/api/requests/:id/comment', (req) => {
@@ -478,11 +507,18 @@ route('POST', '/api/documents', async (req) => {
   } catch (e) { fs.rm(up.storedPath(f.stored), { force: true }, () => {}); throw e; }
 });
 
+// מדיניות צפייה במסמכים (נקבעת בהגדרות): 'own' = כל משתמש רואה רק מה שהעלה; מנהל המערכת רואה הכל.
+// 'request' = כל מי שרשאי לראות את הבקשה / הפרויקט רואה את המסמכים שלו.
+const docsOwnOnly = () => getSetting('docs.visibility') !== 'request';
+function canSeeDoc(req, d) {
+  if (isSysAdmin(req)) return true;
+  if (docsOwnOnly()) return d.uploaded_by === req.user.id;
+  if (d.request_id) { const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(d.request_id); return !!r && canViewRequest(req, r); }
+  return can(req, 'projects.view');
+}
 function loadDoc(req) {
   const d = db.prepare('SELECT * FROM documents WHERE id = ?').get(req.params.id);
-  if (!d) throw new HttpError(404, 'לא נמצא');
-  if (d.request_id) assertView(req, loadRequest(d.request_id));
-  else requirePerm(req, 'projects.view');
+  if (!d || !canSeeDoc(req, d)) throw new HttpError(404, 'לא נמצא'); // 404 – לא חושפים שהקובץ קיים
   return d;
 }
 route('GET', '/api/documents', (req) => {
@@ -490,11 +526,7 @@ route('GET', '/api/documents', (req) => {
   const rows = db.prepare(`SELECT d.id, d.request_id, d.project_id, d.category, d.original_name, d.size, d.mime, d.created_at, d.uploaded_by,
     u.full_name AS uploaded_by_name, r.number AS request_number, p.name AS project_name
     FROM documents d JOIN users u ON u.id = d.uploaded_by LEFT JOIN requests r ON r.id = d.request_id LEFT JOIN projects p ON p.id = d.project_id ORDER BY d.id DESC LIMIT 1000`).all();
-  const out = rows.filter(d => {
-    if (d.request_id) { const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(d.request_id); return r && canViewRequest(req, r); }
-    return can(req, 'projects.view');
-  });
-  return { items: out };
+  return { items: rows.filter(d => canSeeDoc(req, d)), ownOnly: docsOwnOnly() && !isSysAdmin(req) };
 });
 route('GET', '/api/documents/:id/download', (req, res) => {
   requirePerm(req, 'files.download');
@@ -558,7 +590,7 @@ route('GET', '/api/projects/:id', (req) => {
   const tasks = can(req, 'tasks.view') ? db.prepare('SELECT t.*, u.full_name AS assignee_name FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id = ? ORDER BY t.due_date IS NULL, t.due_date').all(p.id) : [];
   const budget = can(req, 'budget.view') ? db.prepare('SELECT * FROM budget_entries WHERE project_id = ? ORDER BY entry_date DESC, id DESC').all(p.id) : null;
   const requests = db.prepare(`${REQ_SELECT} WHERE r.project_id = ? ORDER BY r.id DESC`).all(p.id).filter(r => canViewRequest(req, r)).map(decorate);
-  const docs = db.prepare('SELECT d.id, d.original_name, d.size, d.category, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.project_id = ? ORDER BY d.id DESC').all(p.id);
+  const docs = db.prepare('SELECT d.id, d.original_name, d.size, d.category, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.project_id = ? ORDER BY d.id DESC').all(p.id).filter(d => canSeeDoc(req, d));
   return { project: p, tasks, budget, requests, documents: docs };
 });
 route('PUT', '/api/projects/:id', (req) => {
@@ -764,8 +796,32 @@ function activeAdmins(exceptId) {
 }
 route('GET', '/api/admin/users', (req) => {
   requirePerm(req, 'admin.users');
-  return { items: db.prepare('SELECT * FROM users ORDER BY full_name').all().map(publicUser), roles: db.prepare('SELECT id, name FROM roles ORDER BY id').all() };
+  const links = {};
+  for (const x of db.prepare('SELECT ur.user_id, r.id, r.number FROM user_requests ur JOIN requests r ON r.id = ur.request_id').all()) (links[x.user_id] = links[x.user_id] || []).push({ id: x.id, number: x.number });
+  return { items: db.prepare('SELECT * FROM users ORDER BY full_name').all().map(u => ({ ...publicUser(u), requests: links[u.id] || [] })),
+    roles: db.prepare('SELECT id, name FROM roles ORDER BY id').all(),
+    requests: db.prepare("SELECT id, number, title FROM requests WHERE status != 'closed' ORDER BY id DESC LIMIT 2000").all() };
 });
+// שיוך משתמש לבקשות. בחירה מפורשת חובה: רשימת בקשות, או no_request=true ("ללא שיוך לבקשה")
+function requestLinks(b, required) {
+  if (b.no_request === true) return [];
+  const ids = Array.isArray(b.request_ids) ? [...new Set(b.request_ids.slice(0, 200).map(x => v.id(x, { required: true, name: 'בקשה' })))] : null;
+  if (!ids || !ids.length) { if (required) throw new sec.ValidationError('שיוך לבקשה: שדה חובה (בחרו בקשה או "ללא שיוך לבקשה")'); return null; }
+  for (const id of ids) if (!db.prepare('SELECT 1 FROM requests WHERE id = ?').get(id)) throw new sec.ValidationError('בקשה לא קיימת');
+  return ids;
+}
+function infraChoice(b, required) {
+  if (b.no_infra === true) return { set: true, id: null };
+  const id = v.id(b.infra_body_id, { name: 'גורם תשתית' });
+  if (!id) { if (required) throw new sec.ValidationError('גורם תשתית: שדה חובה (בחרו גורם או "לא משויך לגורם")'); return { set: false }; }
+  if (!db.prepare('SELECT 1 FROM infra_bodies WHERE id = ?').get(id)) throw new sec.ValidationError('גורם תשתית לא קיים');
+  return { set: true, id };
+}
+function saveLinks(userId, ids) {
+  if (ids === null) return;
+  db.prepare('DELETE FROM user_requests WHERE user_id = ?').run(userId);
+  for (const rid of ids) db.prepare('INSERT OR IGNORE INTO user_requests (user_id, request_id) VALUES (?, ?)').run(userId, rid);
+}
 route('POST', '/api/admin/users', async (req) => {
   requirePerm(req, 'admin.users');
   const b = req.body;
@@ -774,14 +830,17 @@ route('POST', '/api/admin/users', async (req) => {
   const email = v.str(b.email, { max: 200, name: 'דוא"ל', pattern: v.EMAIL });
   const role_id = v.id(b.role_id, { required: true, name: 'תפקיד' });
   if (!db.prepare('SELECT 1 FROM roles WHERE id = ?').get(role_id)) throw new sec.ValidationError('תפקיד לא קיים');
+  const infraSel = infraChoice(b, true);
+  const reqIds = requestLinks(b, true);
   if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new sec.ValidationError('שם המשתמש תפוס');
   const probs = sec.passwordProblems(b.password, username);
   if (probs.length) throw new sec.ValidationError('סיסמה חלשה: ' + probs.join(', '));
   const hash = await sec.hashPassword(b.password);
   const info = db.prepare(`INSERT INTO users (username, full_name, email, phone, department, password_hash, role_id, infra_body_id, must_change_pw)
     VALUES (?,?,?,?,?,?,?,?,1)`).run(username, full_name, email, v.str(b.phone, { max: 30, name: 'טלפון', pattern: /^[\d+\-\s()]*$/ }),
-    v.str(b.department, { max: 100, name: 'מחלקה' }), hash, role_id, v.id(b.infra_body_id, { name: 'גורם תשתית' }));
-  audit(req, 'user_created', { id: Number(info.lastInsertRowid), username, role_id }, 'notice');
+    v.str(b.department, { max: 100, name: 'מחלקה' }), hash, role_id, infraSel.id);
+  saveLinks(Number(info.lastInsertRowid), reqIds);
+  audit(req, 'user_created', { id: Number(info.lastInsertRowid), username, role_id, infra: infraSel.id, requests: reqIds }, 'notice');
   return status(201, { id: Number(info.lastInsertRowid) });
 });
 route('PUT', '/api/admin/users/:id', (req) => {
@@ -796,7 +855,7 @@ route('PUT', '/api/admin/users/:id', (req) => {
     phone: v.str(b.phone ?? u.phone, { max: 30, name: 'טלפון', pattern: /^[\d+\-\s()]*$/ }),
     department: v.str(b.department ?? u.department, { max: 100, name: 'מחלקה' }),
     role_id: v.id(b.role_id ?? u.role_id, { required: true, name: 'תפקיד' }),
-    infra_body_id: b.infra_body_id === undefined ? u.infra_body_id : v.id(b.infra_body_id, { name: 'גורם תשתית' }),
+    infra_body_id: (() => { const c = infraChoice(b, false); return c.set ? c.id : u.infra_body_id; })(),
     active: b.active === undefined ? u.active : (b.active ? 1 : 0),
     perm_grant: JSON.stringify(b.perm_grant === undefined ? JSON.parse(u.perm_grant) : cleanPerms(b.perm_grant)),
     perm_deny: JSON.stringify(b.perm_deny === undefined ? JSON.parse(u.perm_deny) : cleanPerms(b.perm_deny)),
@@ -812,6 +871,7 @@ route('PUT', '/api/admin/users/:id', (req) => {
   if (!stillAdmin && activeAdmins(u.id) === 0) throw new sec.ValidationError('חייב להישאר לפחות מנהל מערכת פעיל אחד');
   const cols = Object.keys(upd);
   db.prepare(`UPDATE users SET ${cols.map(c => c + ' = ?').join(', ')} WHERE id = ?`).run(...cols.map(c => upd[c]), u.id);
+  saveLinks(u.id, requestLinks(b, false));
   if (!upd.active || permsChanged) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id); // ניתוק מיידי
   audit(req, 'user_updated', { id: u.id, permsChanged, active: !!upd.active }, permsChanged ? 'notice' : 'info');
   return { ok: true };
@@ -899,7 +959,7 @@ route('GET', '/api/admin/settings', (req) => {
     sla_regular_days: +getSetting('sla.regular_days'), sla_fast_days: +getSetting('sla.fast_days'),
     org_name: getSetting('org.name'), system_title: getSetting('org.system_title'),
     req_prefix: getSetting('requests.prefix'), req_with_year: getSetting('requests.with_year') === '1', req_pad: +getSetting('requests.pad'),
-    req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'),
+    req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'), docs_visibility: docsOwnOnly() ? 'own' : 'request',
   };
 });
 route('PUT', '/api/admin/settings', (req) => {
@@ -919,6 +979,7 @@ route('PUT', '/api/admin/settings', (req) => {
   if (b.sla_fast_days !== undefined) setSetting('sla.fast_days', v.num(b.sla_fast_days, { min: 1, max: 60, name: 'ימי טיפול במסלול מזורז' }));
   if (b.org_name !== undefined) setSetting('org.name', v.str(b.org_name, { max: 100, required: true, name: 'שם הארגון' }));
   if (b.system_title !== undefined) setSetting('org.system_title', v.str(b.system_title, { max: 100, required: true, name: 'שם המערכת' }));
+  if (b.docs_visibility !== undefined) setSetting('docs.visibility', v.oneOf(b.docs_visibility, ['own', 'request'], { required: true, name: 'חשיפת מסמכים' }));
   if (b.req_prefix !== undefined) setSetting('requests.prefix', v.str(b.req_prefix, { max: 10, name: 'קידומת', pattern: /^[A-Za-z0-9\u0590-\u05FF]*$/ }) || '');
   if (b.req_with_year !== undefined) setSetting('requests.with_year', b.req_with_year ? '1' : '0');
   if (b.req_pad !== undefined) setSetting('requests.pad', v.num(b.req_pad, { min: 1, max: 8, name: 'מספר ספרות' }));

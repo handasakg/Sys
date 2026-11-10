@@ -26,7 +26,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     let csrf = (await (await api.post(base + '/api/auth/login', { headers: { 'X-Requested-With': 'fetch' }, data: { username: 'chief', password: adminPw } })).json()).csrf;
     const call = async (m, u, d) => { const r = await api.fetch(base + u, { method: m, headers: { 'X-Requested-With': 'fetch', 'X-CSRF-Token': csrf }, data: d }); return r.json(); };
     const roles = (await call('GET', '/api/admin/roles')).items; const rid = n => roles.find(r => r.name === n).id;
-    const engPw = pw(); const eng = await call('POST', '/api/admin/users', { username: 'yossi', full_name: 'יוסי כהן', role_id: rid('מהנדס / מאשר'), password: engPw, department: 'מינהל הנדסה' });
+    const engPw = pw(); const eng = await call('POST', '/api/admin/users', { username: 'yossi', full_name: 'יוסי כהן', role_id: rid('מהנדס / מאשר'), password: engPw, department: 'מינהל הנדסה', no_infra: true, no_request: true });
     const p1 = await call('POST', '/api/projects', { name: 'שדרוג קווי מים – שכונת הפרחים', code: 'P-2026-14', status: 'פעיל', manager_id: eng.id, start_date: '2026-09-01', end_date: '2027-03-31', budget: 2400000 });
     await call('POST', '/api/projects', { name: 'ריצוף מדרכות רחוב הרצל', code: 'P-2026-21', status: 'תכנון', start_date: '2026-12-01', end_date: '2027-06-30', budget: 850000 });
     await call('POST', `/api/projects/${p1.id}/budget`, { kind: 'actual', description: 'חשבון ביניים קבלן 1', amount: 640000, entry_date: '2026-10-15' });
@@ -108,6 +108,15 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     rec('עיצוב', 'ברירת המחדל: אוקיינוס, רקע זוהר נע, כרטיסי זכוכית, פינות מעוגלות, תפריט צף', def === 'ocean/aurora/glass/soft/floating', def);
     const rememberBox = await page.evaluate(() => { const c = document.querySelector('input[name=remember]'); return c && c.type === 'checkbox' && !!c.closest('label') && c.getBoundingClientRect().width >= 24; });
     rec('זכור אותי', 'במסך הכניסה יש תיבת "זכור אותי" עם תווית והסבר', !!rememberBox);
+    const lg = await page.evaluate(() => {
+      const logo = document.querySelector('.auth-form .auth-logo'); const h2 = document.querySelector('.auth-form h2');
+      const flow = document.querySelectorAll('.auth-art svg.auth-flow .af-flow');
+      return { aboveHeading: !!logo && !!h2 && logo.getBoundingClientRect().bottom <= h2.getBoundingClientRect().top, size: logo ? Math.round(logo.getBoundingClientRect().height) : 0,
+        inArt: !!document.querySelector('.auth-art img'), flows: flow.length, anim: flow.length ? getComputedStyle(flow[0]).animationName : '', dots: getComputedStyle(document.querySelector('.auth-art'), '::before').content };
+    });
+    rec('מסך כניסה', 'הלוגו מעל "כניסה למערכת", גדול (80px ומעלה) ולא בפאנל הכחול', lg.aboveHeading && lg.size >= 80 && !lg.inArt, JSON.stringify(lg));
+    rec('מסך כניסה', 'רקע כחול מונפש עם קווי תשתית זורמים, בלי רשת הנקודות', lg.flows === 5 && lg.anim === 'af-flow' && (lg.dots === 'none' || lg.dots === 'normal'), `${lg.flows} קווים, ${lg.anim}`);
+    await page.waitForTimeout(1200);
     await page.screenshot({ path: path.join(SHOTS, 'login-default-1280.png') });
     // מקלדת במסך כניסה
     await page.goto(base + '/'); await page.waitForSelector('form');
@@ -237,6 +246,21 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await pl.screenshot({ path: path.join(SHOTS, 'login-logo-1280.png') }); await ctxL.close();
     page.once('dialog', d => d.accept());
     await page.click('text=הסרת לוגו'); await page.click('dialog[open] .btn.danger'); await page.waitForTimeout(400);
+
+    // משתמש חדש: שדות חובה
+    await page.goto(base + '/#/admin/users'); await page.waitForSelector('h1');
+    await page.click('.page-head .btn.primary'); await page.waitForSelector('dialog[open]');
+    await page.fill('dialog[open] input[name=full_name]', 'בדיקה'); await page.fill('dialog[open] input[name=username]', 'ui.test'); await page.fill('dialog[open] input[name=password]', 'Abcdef123456xyz');
+    await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(200);
+    const err1 = await page.textContent('dialog[open] .form-error');
+    await page.selectOption('dialog[open] select[name=role_id]', { index: 1 }); await page.selectOption('dialog[open] select[name=infra_choice]', 'none');
+    await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(200);
+    const err2 = await page.textContent('dialog[open] .form-error');
+    await page.check('dialog[open] .req-pick-list input >> nth=0');
+    await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(500);
+    const saved = await page.evaluate(() => !document.querySelector('dialog[open]') && document.querySelector('main').textContent.includes('ui.test'));
+    rec('משתמש חדש', 'בטופס משתמש חדש: תפקיד, גורם תשתית ושיוך לבקשה חובה; עם הבחירות – נשמר', /שדה|נא/.test(err1) && /לשייך/.test(err2) && saved, `${err1} | ${err2}`);
+    await page.goto(base + '/'); await page.waitForSelector('.sidebar');
 
     // חלון קופץ: פוקוס, Esc, החזרת פוקוס
     await page.goto(base + '/#/admin/users'); await page.waitForSelector('h1');

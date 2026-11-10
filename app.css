@@ -457,3 +457,37 @@ dialog::backdrop { background: rgba(10,20,25,.55); }
 .auth-logo { max-width: 220px; height: 56px; width: auto; object-fit: contain; }
 .logo-box { border: 1px dashed var(--rule-strong); border-radius: var(--radius); padding: 16px; display: grid; place-items: center; min-height: 110px; background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface) 0% 50%) 50% / 16px 16px; }
 .logo-preview { max-width: 220px; max-height: 80px; object-fit: contain; }
+
+/* ===== מסך כניסה: רקע מונפש של קווי תשתית ===== */
+.auth-art { background: radial-gradient(120% 90% at 85% 0%, #1B3A5C 0%, #11253A 45%, #0B1826 100%); isolation: isolate; }
+.auth-art::before { content: none; }
+.auth-art > :not(.auth-flow) { position: relative; z-index: 1; }
+.auth-flow { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
+.af-base { fill: none; stroke: var(--c); stroke-width: 3; stroke-opacity: .22; stroke-linecap: round; }
+.af-flow { fill: none; stroke: var(--c); stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 70 260; filter: drop-shadow(0 0 6px var(--c)); animation: af-flow var(--sp) linear infinite; animation-delay: var(--dl); }
+.af-node { fill: #0B1826; stroke: #E3EEF7; stroke-width: 2.5; animation: af-pulse 3.6s ease-in-out infinite; animation-delay: var(--dl); transform-box: fill-box; transform-origin: center; }
+.af-glow { animation: af-drift 22s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: center; }
+.af-glow.g2 { animation-duration: 28s; animation-direction: alternate-reverse; }
+@keyframes af-flow { to { stroke-dashoffset: -330; } }
+@keyframes af-pulse { 0%, 100% { transform: scale(1); stroke-opacity: .55; } 50% { transform: scale(1.45); stroke-opacity: 1; } }
+@keyframes af-drift { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(-60px, 40px) scale(1.15); } }
+@media (prefers-reduced-motion: reduce) { .af-flow { stroke-dasharray: none; stroke-opacity: .6; } }
+.auth-art-top { display: flex; justify-content: flex-start; }
+.auth-org { font-weight: 650; letter-spacing: .01em; opacity: .9; }
+.auth-art h1 { text-shadow: 0 2px 18px rgba(0,0,0,.35); }
+.auth-lines { background: rgba(8,18,28,.55); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 12px 14px; backdrop-filter: blur(6px); width: fit-content; }
+.auth-lines span { grid-template-columns: 40px auto; }
+/* לוגו מעל טופס הכניסה – גדול וברור */
+.auth-logo-wrap { display: flex; justify-content: center; margin-bottom: 22px; }
+.auth-logo { display: block; max-width: min(300px, 80vw); max-height: 130px; width: auto; height: auto; object-fit: contain; }
+.auth-logo.default { width: 88px; height: 88px; border-radius: 20px; box-shadow: 0 10px 30px rgba(11,40,70,.25); }
+.auth-form .box h2 { text-align: center; font-size: 1.45rem; margin-bottom: 18px; }
+/* לוגו גדול בראש תפריט הצד */
+.brand.has-logo { flex-direction: column; align-items: stretch; text-align: center; gap: 10px; padding: 18px 16px 14px; }
+.brand-mark.custom { width: 100%; max-width: 100%; height: 72px; object-fit: contain; }
+.brand.has-logo .brand-title { font-size: 1rem; }
+:root[data-sidebar="compact"] .brand-mark.custom { height: 40px; }
+/* בחירת בקשות למשתמש */
+.req-pick-list { max-height: 210px; overflow-y: auto; border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 4px 10px; margin-top: 8px; }
+fieldset[aria-invalid="true"] { border: 2px solid var(--bad); }
+.st-pending_admin { background: var(--accent-soft); color: var(--ink); }
