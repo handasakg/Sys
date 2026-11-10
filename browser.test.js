@@ -44,7 +44,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await ctx0.close();
 
     // ---------- מובייל + מסכים ----------
-    const PAGES = ['#/', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/requests/new', '#/projects', `#/projects/${p1.id}`, '#/tasks', '#/schedule', '#/budget', '#/documents', '#/appearance', '#/account', '#/admin/users', '#/admin/roles', '#/admin/settings', '#/admin/audit', '#/admin/backups'];
+    const PAGES = ['#/', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/requests/new', '#/projects', `#/projects/${p1.id}`, '#/tasks', '#/reports', '#/schedule', '#/budget', '#/documents', '#/appearance', '#/account', '#/admin/users', '#/admin/roles', '#/admin/settings', '#/admin/audit', '#/admin/backups'];
     const consoleErrors = []; let xssFired = false;
     async function login(page) {
       await page.goto(base + '/'); await page.fill('input[name=username]', 'chief'); await page.fill('input[name=password]', adminPw);
@@ -92,7 +92,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       await ctx.close();
     }
     const overflow = out.mobile.filter(m => m.overflow);
-    rec('מובייל', 'אין גלילה לצדדים ב-360/390/768 (21 מסכים × 3 רוחבים)', overflow.length === 0, overflow.map(m => `${m.page}@${m.vw}:+${m.overflow}px`).join(', '));
+    rec('מובייל', 'אין גלילה לצדדים ב-360/390/768 (22 מסכים × 3 רוחבים)', overflow.length === 0, overflow.map(m => `${m.page}@${m.vw}:+${m.overflow}px`).join(', '));
     const small = [...new Set(out.mobile.flatMap(m => m.small.map(s => `${m.page}@${m.vw}: ${s}`)))];
     rec('מובייל', 'כל היעדים ללחיצה לפחות 24×24 (WCAG 2.5.8)', small.length === 0, small.slice(0, 6).join(' | '));
     rec('XSS', 'קוד זדוני בכותרת/כתובת של בקשה לא רץ בדפדפן', !xssFired);
@@ -139,10 +139,10 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       });
       if (a.length) out.a11y.push({ page: p, issues: a });
     }
-    rec('נגישות', 'תוויות לשדות, שמות לכפתורים, alt לתמונות, h1 יחיד, lang=he בכל 17 המסכים', out.a11y.length === 0, out.a11y.map(x => `${x.page}: ${x.issues.join(';')}`).join(' | '));
+    rec('נגישות', 'תוויות לשדות, שמות לכפתורים, alt לתמונות, h1 יחיד, lang=he בכל 18 המסכים', out.a11y.length === 0, out.a11y.map(x => `${x.page}: ${x.issues.join(';')}`).join(' | '));
 
     // ניגודיות
-    const themes = [['drafting', 'light'], ['drafting', 'dark'], ['concrete', 'light'], ['concrete', 'dark'], ['sand', 'light'], ['sand', 'dark'], ['night', 'dark']];
+    const themes = [['drafting', 'light'], ['drafting', 'dark'], ['concrete', 'light'], ['concrete', 'dark'], ['sand', 'light'], ['sand', 'dark'], ['ocean', 'light'], ['ocean', 'dark'], ['aurora', 'light'], ['aurora', 'dark'], ['night', 'dark'], ['graphite', 'dark'], ['aurora', 'light', 'glass', 'aurora'], ['aurora', 'dark', 'glass', 'aurora'], ['ocean', 'light', 'raised', 'gradient'], ['concrete', 'light', 'outline', 'plain']];
     const contrastFn = () => {
       const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); if (!m) return null; const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p[3] === undefined ? 1 : p[3] }; };
       const lum = ({ r, g, b }) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
@@ -170,25 +170,47 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       }
       return { checked, fails: [...new Set(fails)] };
     };
-    for (const [theme, mode] of themes) {
-      await page.evaluate(([t, m]) => { document.documentElement.dataset.theme = t; document.documentElement.dataset.mode = m; }, [theme, mode]);
+    for (const [theme, mode, style = 'flat', bg = 'plain'] of themes) {
+      const setT = ([t, m, st, b]) => { const r = document.documentElement; r.dataset.theme = t; r.dataset.mode = m; r.dataset.style = st; r.dataset.bg = b; r.dataset.chartAnim = 'off'; };
       let total = 0; const fails = [];
-      for (const p of ['#/', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/projects', '#/admin/users', '#/admin/audit']) {
-        await page.goto(base + '/' + p); await page.waitForTimeout(250);
-        await page.evaluate(([t, m]) => { document.documentElement.dataset.theme = t; document.documentElement.dataset.mode = m; }, [theme, mode]);
+      for (const p of ['#/', '#/reports', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/projects', '#/admin/users', '#/admin/audit', '#/appearance']) {
+        await page.goto(base + '/' + p); await page.waitForTimeout(350);
+        await page.evaluate(setT, [theme, mode, style, bg]);
         await page.waitForTimeout(80);
         const c = await page.evaluate(contrastFn); total += c.checked; fails.push(...c.fails.map(f => `${p}: ${f}`));
       }
-      out.contrast.push({ theme, mode, checked: total, fails: [...new Set(fails)] });
-      if (theme === 'night' || (theme === 'drafting' && mode === 'dark')) await page.screenshot({ path: path.join(SHOTS, `theme-${theme}-${mode}.png`) });
+      out.contrast.push({ theme: `${theme}/${style}/${bg}`, mode, checked: total, fails: [...new Set(fails)] });
+      if (style === 'glass' || theme === 'graphite') { await page.goto(base + '/#/reports'); await page.waitForTimeout(400); await page.evaluate(setT, [theme, mode, style, bg]); await page.waitForTimeout(150); await page.screenshot({ path: path.join(SHOTS, `theme-${theme}-${mode}-${style}.png`), fullPage: true }); }
     }
     const cf = out.contrast.filter(c => c.fails.length);
-    rec('נגישות', 'ניגודיות AA (4.5:1 / 3:1) בכל 7 ערכות הצבע', cf.length === 0, cf.map(c => `${c.theme}/${c.mode}: ${c.fails.length} – ${c.fails.slice(0, 3).join('; ')}`).join(' | '));
+    rec('נגישות', 'ניגודיות AA (4.5:1 / 3:1) בכל 12 ערכות הצבע + 4 שילובי סגנון/רקע (8 מסכים כל אחד)', cf.length === 0, cf.map(c => `${c.theme}/${c.mode}: ${c.fails.length} – ${c.fails.slice(0, 3).join('; ')}`).join(' | '));
     for (const p of ['/privacy.html', '/accessibility.html', '/nope-404']) {
       await page.goto(base + p); const c = await page.evaluate(contrastFn);
       if (c.fails.length) out.contrast.push({ theme: 'static', page: p, fails: c.fails });
     }
     rec('נגישות', 'ניגודיות בעמודי פרטיות, נגישות ו-404', !out.contrast.some(c => c.theme === 'static'), out.contrast.filter(c => c.theme === 'static').map(c => c.page + ': ' + c.fails.join(';')).join(' | '));
+
+    // גרפים: נגישות וטולטיפ במקלדת
+    await page.goto(base + '/#/reports'); await page.waitForSelector('figure.chart svg');
+    await page.evaluate(() => { const r = document.documentElement; r.dataset.theme = 'drafting'; r.dataset.mode = 'light'; r.dataset.style = 'flat'; r.dataset.bg = 'plain'; });
+    const charts = await page.evaluate(() => [...document.querySelectorAll('figure.chart')].map(f => ({ t: f.querySelector('h3').textContent, img: !!f.querySelector('svg[role=img][aria-label]') || !!f.querySelector('.chart-empty'), tbl: !!f.querySelector('table') || !!f.querySelector('.chart-empty') })));
+    rec('גרפים', `${charts.length} גרפים בעמוד הדוחות, לכל אחד role=img + תיאור + תצוגת טבלה`, charts.length >= 6 && charts.every(c => c.img && c.tbl), charts.map(c => c.t).join(' | '));
+    await page.locator('figure.chart [data-tip][tabindex="0"]').first().focus();
+    const tipShown = await page.evaluate(() => { const t = document.querySelector('.chart-tip:not([hidden])'); return t ? t.textContent : null; });
+    rec('גרפים', 'טולטיפ מופיע גם בניווט מקלדת (Tab), לא רק בעכבר', !!tipShown, tipShown);
+    const tbtn = page.locator('figure.chart .chart-head button[aria-expanded]').first(); await tbtn.click();
+    rec('גרפים', 'כפתור "הצגה כטבלה" פותח טבלת נתונים (aria-expanded)', await tbtn.getAttribute('aria-expanded') === 'true' && await page.locator('figure.chart .tbl-wrap:not([hidden]) table').count() > 0);
+    await page.goto(base + '/#/appearance'); await page.waitForSelector('.preset');
+    await page.click('.preset:has-text("מודרני")'); await page.waitForTimeout(200);
+    const modern = await page.evaluate(() => ({ t: document.documentElement.dataset.theme, b: document.documentElement.dataset.bg, st: document.documentElement.dataset.style, sb: document.documentElement.dataset.sidebar }));
+    rec('עיצוב', 'ערכה מוכנה "מודרני" מחילה ערכת צבעים, רקע, סגנון ותפריט צף בבת אחת', modern.t === 'aurora' && modern.b === 'aurora' && modern.st === 'glass' && modern.sb === 'floating', JSON.stringify(modern));
+    await page.screenshot({ path: path.join(SHOTS, 'appearance-modern-1280.png'), fullPage: true });
+    await page.fill('#accent-pick', '#ffee00'); await page.waitForTimeout(150);
+    const acc = await page.evaluate(() => { const cs = getComputedStyle(document.documentElement); return { a: cs.getPropertyValue('--accent').trim(), s: cs.getPropertyValue('--surface').trim(), msg: document.querySelector('[role=status][aria-live=polite]').textContent }; });
+    const lum = (hx) => { const n = parseInt(hx.replace('#', ''), 16); const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(n >> 16) + 0.7152 * f((n >> 8) & 255) + 0.0722 * f(n & 255); };
+    const cr = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    rec('עיצוב', 'צבע אישי בהיר מדי (צהוב) מתוקן אוטומטית לניגודיות קריאה', cr(acc.a, acc.s) >= 4.5 && /הוכהה/.test(acc.msg), `${acc.a} על ${acc.s} = ${cr(acc.a, acc.s).toFixed(2)}:1`);
+    await page.click('text=ביטול השינויים');
 
     // חלון קופץ: פוקוס, Esc, החזרת פוקוס
     await page.goto(base + '/#/admin/users'); await page.waitForSelector('h1');
@@ -251,7 +273,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     for (const p of PAGES) { await page.goto(base + '/' + p); await page.waitForTimeout(200); for (const h of await page.evaluate(() => [...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')))) hrefs.add(h); }
     const broken = [];
     for (const h of hrefs) {
-      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?|\/new)?|projects(\/\d+)?|tasks(\?mine=1)?|schedule|budget|documents|appearance|account|admin\/(users|roles|settings|audit|backups)|forgot)$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
+      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?|\/new)?|projects(\/\d+)?|tasks(\?mine=1)?|schedule|reports|budget|documents|appearance|account|admin\/(users|roles|settings|audit|backups)|forgot)$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
       if (h === '#main') continue;
       const url = new URL(h, base + '/'); const st = (await ctx.request.get(url.href)).status();
       out.links.push({ href: h, status: st }); if (st >= 400) broken.push(`${h}:${st}`);

@@ -51,6 +51,7 @@
     trash: 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14',
     edit: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4',
     task: 'M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2',
+    chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   };
   function icon(name) {
     const svg = document.createElementNS(NS, 'svg');
@@ -162,16 +163,38 @@
   }
 
   // ---------- עיצוב ותצוגה ----------
-  const PREF_DEFAULTS = { theme: 'drafting', mode: 'auto', shape: 'soft', style: 'flat', density: 'regular', font: 'sans', fontSize: '16', accent: '', motion: 'full', sidebar: 'full', contrast: 'normal', bg: 'plain' };
+  const PREF_DEFAULTS = { theme: 'drafting', mode: 'auto', shape: 'soft', style: 'flat', density: 'regular', font: 'sans', fontSize: '16', accent: '', motion: 'full', sidebar: 'full', contrast: 'normal', bg: 'plain',
+    width: 'regular', header: 'blur', chartTexture: 'off', chartGrid: 'on', chartAnim: 'on' };
+  const DARK_ONLY = ['night', 'graphite'];
+  // ניגודיות: צבע הדגשה מותאם אישית מתוקן אוטומטית עד שהוא קריא (4.5:1) על המשטח של ערכת הנושא
+  const hex2rgb = (hx) => { const m = /^#?([0-9a-f]{6})$/i.exec(hx.trim()); if (!m) return null; const n = parseInt(m[1], 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
+  const rgb2hex = (c) => '#' + c.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
+  const relLum = (c) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
+  const ratio = (a, b) => { const l1 = relLum(a), l2 = relLum(b); return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05); };
+  function readableAccent(hx, surfaceHex) {
+    let c = hex2rgb(hx); const sf = hex2rgb(surfaceHex) || [255, 255, 255];
+    const toward = relLum(sf) > 0.4 ? [0, 0, 0] : [255, 255, 255];
+    for (let i = 0; i < 20 && ratio(c, sf) < 4.5; i++) c = c.map((v, k) => v + (toward[k] - v) * 0.12);
+    const ink = ratio(c, [255, 255, 255]) >= ratio(c, [0, 0, 0]) ? '#FFFFFF' : '#000000';
+    return { accent: rgb2hex(c), ink, adjusted: rgb2hex(c).toLowerCase() !== hx.toLowerCase() };
+  }
   function applyPrefs(p) {
     const r = document.documentElement; const x = { ...PREF_DEFAULTS, ...p };
     const dark = x.mode === 'dark' || (x.mode === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
-    r.dataset.mode = x.theme === 'night' ? 'dark' : (dark ? 'dark' : 'light');
+    r.dataset.mode = DARK_ONLY.includes(x.theme) || dark ? 'dark' : 'light';
     r.dataset.theme = x.theme; r.dataset.shape = x.shape; r.dataset.style = x.style; r.dataset.density = x.density;
     r.dataset.font = x.font; r.dataset.motion = x.motion; r.dataset.sidebar = x.sidebar; r.dataset.contrast = x.contrast; r.dataset.bg = x.bg;
+    r.dataset.width = x.width; r.dataset.header = x.header; r.dataset.chartTexture = x.chartTexture; r.dataset.chartGrid = x.chartGrid; r.dataset.chartAnim = x.chartAnim;
     r.style.setProperty('--fs', (/^\d{2}$/.test(x.fontSize) ? x.fontSize : '16') + 'px');
-    if (x.accent && /^#[0-9a-f]{6}$/i.test(x.accent) && x.contrast !== 'high') { r.style.setProperty('--accent', x.accent); }
-    else r.style.removeProperty('--accent');
+    for (const v of ['--accent', '--accent-ink', '--accent-soft']) r.style.removeProperty(v);
+    if (x.accent && /^#[0-9a-f]{6}$/i.test(x.accent) && x.contrast !== 'high') {
+      const surface = getComputedStyle(r).getPropertyValue('--surface').trim();
+      const fix = readableAccent(x.accent, surface);
+      r.style.setProperty('--accent', fix.accent); r.style.setProperty('--accent-ink', fix.ink);
+      r.style.setProperty('--accent-soft', `color-mix(in srgb, ${fix.accent} 16%, ${surface})`);
+      return fix;
+    }
+    return null;
   }
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyPrefs(S.prefs));
 
@@ -294,6 +317,7 @@
     { g: 'ניהול עבודה', items: [
       ['#/projects', 'פרויקטים', 'folder', ['projects.view']],
       ['#/tasks', 'משימות', 'task', ['tasks.view']],
+      ['#/reports', 'דוחות וגרפים', 'chart', null],
       ['#/schedule', 'לוח זמנים', 'calendar', null],
       ['#/budget', 'תקציב', 'coins', ['budget.view']],
       ['#/documents', 'מסמכים', 'file', null]] },
@@ -370,7 +394,7 @@
   const ROUTES = [
     [/^\/$/, viewDashboard], [/^\/requests$/, viewRequests], [/^\/requests\/new$/, viewRequestForm], [/^\/requests\/(\d+)$/, viewRequest],
     [/^\/requests\/(\d+)\/edit$/, viewRequestForm], [/^\/projects$/, viewProjects], [/^\/projects\/(\d+)$/, viewProject], [/^\/tasks$/, viewTasks],
-    [/^\/schedule$/, viewSchedule], [/^\/budget$/, viewBudget], [/^\/documents$/, viewDocuments], [/^\/appearance$/, viewAppearance],
+    [/^\/schedule$/, viewSchedule], [/^\/reports$/, viewReports], [/^\/budget$/, viewBudget], [/^\/documents$/, viewDocuments], [/^\/appearance$/, viewAppearance],
     [/^\/account$/, viewAccount], [/^\/admin\/users$/, viewAdminUsers], [/^\/admin\/roles$/, viewAdminRoles], [/^\/admin\/settings$/, viewAdminSettings],
     [/^\/admin\/audit$/, viewAdminAudit], [/^\/admin\/backups$/, viewAdminBackups],
   ];
@@ -415,14 +439,291 @@
         cols.map(c => { const v = c.render ? c.render(r) : (r[c.key] ?? '—'); return h('td', { 'data-l': c.label, class: c.cls || null }, v); }))))));
   }
 
+  // ======================================================================
+  // גרפים (SVG ללא ספריות): קו, טבעת, עמודות, עמודות מוערמות, תקציב, מד עמידה ביעד.
+  // כל גרף: כותרת, טולטיפ בעכבר ובמקלדת, מקרא, ותצוגת טבלה נגישה.
+  // ======================================================================
+  function svg(tag, attrs, ...kids) {
+    const el = document.createElementNS(NS, tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (v === null || v === undefined || v === false) continue;
+      // CSP חוסם מאפיין style בטקסט – מגדירים דרך CSSOM
+      if (k === 'style') { for (const decl of String(v).split(';')) { const i = decl.indexOf(':'); if (i > 0) el.style.setProperty(decl.slice(0, i).trim(), decl.slice(i + 1).trim()); } }
+      else el.setAttribute(k, String(v));
+    }
+    for (const kid of kids.flat(Infinity)) { if (kid === null || kid === undefined || kid === false) continue; el.append(kid instanceof Node ? kid : document.createTextNode(String(kid))); }
+    return el;
+  }
+  let chartSeq = 0;
+  const CAT = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)'];
+  const nf = new Intl.NumberFormat('he-IL');
+  const compactMoney = (n) => new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', notation: 'compact', maximumFractionDigits: 1 }).format(n || 0);
+  const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
+  const texOn = () => document.documentElement.dataset.chartTexture === 'on';
+  function texDefs(id) {
+    // מרקם קווים אלכסוניים – ערוץ נוסף מלבד צבע (עיוורון צבעים / הדפסה)
+    return svg('defs', null, [45, 135, 0, 90, 45].map((a, i) => svg('pattern', { id: `${id}-tx${i}`, width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: `rotate(${a})` },
+      svg('line', { x1: 0, y1: 0, x2: 0, y2: 6, stroke: 'var(--surface)', 'stroke-width': i === 4 ? 1 : 2, 'stroke-opacity': .7 }))));
+  }
+  const texFill = (id, i) => texOn() ? `url(#${id}-tx${i % 5})` : null;
+  function niceMax(v) { if (v <= 4) return 4; const p = 10 ** Math.floor(Math.log10(v)); const m = v / p; return (m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; }
+  function monthLabel(ym) { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('he-IL', { month: 'short', timeZone: 'UTC' }) + ` ${String(y).slice(2)}`; }
+
+  function chartFrame({ title, sub, wide, table, csv }, body, legend) {
+    const id = 'ch' + (++chartSeq);
+    const tip = h('div', { class: 'chart-tip', hidden: true, 'aria-hidden': 'true' });
+    const tblBox = h('div', { class: 'tbl-wrap', id: id + '-tbl', hidden: true });
+    if (table) tblBox.append(h('table', null, h('caption', { class: 'sr-only' }, title),
+      h('thead', null, h('tr', null, table.head.map(x => h('th', { scope: 'col' }, x)))),
+      h('tbody', null, table.rows.map(r => h('tr', null, r.map((c, i) => i === 0 ? h('th', { scope: 'row' }, c) : h('td', { class: 'num' }, c)))))));
+    const toggle = table ? h('button', { class: 'btn sm ghost', type: 'button', 'aria-expanded': 'false', 'aria-controls': id + '-tbl', onclick: (e) => {
+      const open = tblBox.hidden; tblBox.hidden = !open; e.currentTarget.setAttribute('aria-expanded', String(open)); e.currentTarget.textContent = open ? 'הסתרת טבלה' : 'הצגה כטבלה'; } }, 'הצגה כטבלה') : null;
+    const csvBtn = csv ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => downloadCsv(csv.name, table.head, table.rows) }, icon('download'), h('span', { class: 'sr-only' }, 'ייצוא '), 'CSV') : null;
+    const fig = h('figure', { class: 'chart' + (wide ? ' wide' : ''), 'aria-labelledby': id + '-t' },
+      h('div', { class: 'chart-head' }, h('div', null, h('h3', { id: id + '-t' }, title), sub ? h('p', { class: 'sub' }, sub) : null), toggle, csvBtn),
+      body, legend || null, tblBox, tip);
+    // טולטיפ: עכבר ומקלדת
+    const show = (el, x, y) => {
+      const [t, ...lines] = el.getAttribute('data-tip').split('\n');
+      tip.replaceChildren(h('b', null, t), ...lines.map(l => h('div', null, l)));
+      tip.hidden = false;
+      const fr = fig.getBoundingClientRect();
+      const left = Math.min(Math.max(x - fr.left, 80), fr.width - 80);
+      tip.style.left = left + 'px'; tip.style.top = (y - fr.top) + 'px';
+      const g = el.closest('svg'); if (g) { g.classList.add('dim'); g.querySelectorAll(`[data-k="${el.dataset.k}"]`).forEach(m => m.classList.add('hot')); }
+      if (el.dataset.col !== undefined && g) g.querySelectorAll('[data-colshow]').forEach(c => { c.style.visibility = c.dataset.colshow === el.dataset.col ? 'visible' : 'hidden'; });
+    };
+    const hide = () => { tip.hidden = true; fig.querySelectorAll('svg.dim').forEach(g => g.classList.remove('dim')); fig.querySelectorAll('.hot').forEach(m => m.classList.remove('hot')); fig.querySelectorAll('[data-colshow]').forEach(c => { c.style.visibility = 'hidden'; }); };
+    fig.addEventListener('pointermove', (e) => { const el = e.target.closest('[data-tip]'); if (el) show(el, e.clientX, e.clientY); else hide(); });
+    fig.addEventListener('pointerleave', hide);
+    fig.addEventListener('focusin', (e) => { const el = e.target.closest('[data-tip]'); if (!el) return; const r = el.getBoundingClientRect(); show(el, r.left + r.width / 2, r.top); });
+    fig.addEventListener('focusout', hide);
+    fig.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+    return fig;
+  }
+  function downloadCsv(name, head, rows) {
+    const esc = (v) => { let s = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
+    const csv = '﻿' + [head, ...rows].map(r => r.map(esc).join(',')).join('\r\n');
+    const a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), download: `${name}-${today()}.csv` });
+    document.body.append(a); a.click(); a.remove();
+  }
+  function legendList(items) {
+    return h('ul', { class: 'legend', 'aria-label': 'מקרא' }, items.map(it => h('li', null, h('i', { style: { background: it.color } }), it.label,
+      it.value !== undefined ? h('span', { class: 'lv' }, it.value) : null, it.pct !== undefined ? h('span', { class: 'lp' }, `(${it.pct}%)`) : null)));
+  }
+  function emptyChart(opts, text) { return chartFrame(opts, h('p', { class: 'chart-empty' }, text || 'אין עדיין נתונים לתקופה שנבחרה.')); }
+
+  // ---- עזרים: ציור ברוחב האמיתי (טקסט נשאר 12px בכל גודל) וטקסט עברי תקין ----
+  function responsive(draw, guess = 600) {
+    const box = h('div', { class: 'svg-box' });
+    let w = 0;
+    box.append(draw(guess));
+    if ('ResizeObserver' in window) {
+      const ro = new ResizeObserver((entries) => {
+        if (!box.isConnected) { ro.disconnect(); return; }
+        const nw = Math.round(entries[0].contentRect.width);
+        if (nw && Math.abs(nw - w) > 8) { w = nw; box.replaceChildren(draw(Math.max(nw, 260))); }
+      });
+      ro.observe(box);
+    }
+    return box;
+  }
+  // align: 'right' = הקצה הימני של הטקסט ב-x, 'left' = הקצה השמאלי ב-x, 'middle' = ממורכז. הטקסט עצמו תמיד בכיוון עברי
+  function txt(x, y, side, content, cls) {
+    return svg('text', { x, y, 'text-anchor': side === 'right' ? 'start' : side === 'left' ? 'end' : 'middle', class: cls || null, style: 'direction: rtl; unicode-bidi: plaintext' }, content);
+  }
+  const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+  // ---- גרף קו: מגמה לאורך זמן (ציר הזמן מימין לשמאל, כמו בכל הממשק) ----
+  function lineChart(opts, labels, series) {
+    if (!labels.length || series.every(s => s.values.every(v => !v))) return emptyChart(opts);
+    const max = niceMax(Math.max(...series.flatMap(s => s.values)));
+    const n = labels.length;
+    const draw = (W) => {
+      const H = 240, pt = 14, pb = 30, pr = 36, pl = 78;
+      const step = (W - pr - pl) / Math.max(n - 1, 1);
+      const X = (i) => W - pr - i * step; const Y = (v) => pt + (H - pt - pb) * (1 - v / max);
+      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': `${opts.title}: ${series.map(s => `${s.name} – סה"כ ${s.values.reduce((a, b) => a + b, 0)}`).join(', ')}` });
+      for (let t = 0; t <= 4; t++) { const v = max / 4 * t; root.append(svg('line', { class: t ? 'gridline' : 'axis', x1: pl, x2: W - pr, y1: Y(v), y2: Y(v) }), txt(W - pr + 8, Y(v) + 4, 'left', nf.format(v))); }
+      const minGap = 58; let lastX = -Infinity; // מתחילים מהחודש האחרון כדי שתמיד יופיע
+      for (let i = n - 1; i >= 0; i--) { const x = X(i); if (x - lastX >= minGap) { root.append(txt(x, H - 8, 'middle', monthLabel(labels[i]))); lastX = x; } }
+      series.forEach((s, si) => {
+        const d = s.values.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' ');
+        if (si === 0) root.append(svg('path', { class: 'area fade', d: `${d} L${X(n - 1)},${Y(0)} L${X(0)},${Y(0)} Z`, fill: s.color }));
+        root.append(svg('path', { class: 'line draw mark', 'data-k': 's' + si, d, stroke: s.color, style: '--len: 3000' }));
+      });
+      // תוויות ישירות בקצה הקו, בהיסט כדי שלא יתנגשו
+      const ends = series.map(s => ({ y: Y(s.values[n - 1]), s })).sort((a, b) => a.y - b.y);
+      for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 16) ends[i].y = ends[i - 1].y + 16;
+      for (const e of ends) root.append(txt(X(n - 1) - 8, e.y + 4, 'right', `${e.s.name} ${e.s.values[n - 1]}`, 'v'));
+      labels.forEach((l, i) => root.append(svg('g', { 'data-colshow': i, style: 'visibility: hidden' }, svg('line', { class: 'cross', x1: X(i), x2: X(i), y1: pt, y2: H - pb }),
+        series.map(s => svg('circle', { class: 'dot', cx: X(i), cy: Y(s.values[i]), r: 5, fill: s.color })))));
+      labels.forEach((l, i) => {
+        const w = Math.max(step, 12);
+        root.append(svg('rect', { class: 'hit', x: X(i) - w / 2, y: pt, width: w, height: H - pt - pb, tabindex: 0, 'data-col': i,
+          'data-tip': [monthLabel(l), ...series.map(s => `${s.name}: ${s.values[i]}`)].join('\n'), 'aria-label': `${monthLabel(l)}: ${series.map(s => `${s.name} ${s.values[i]}`).join(', ')}` }));
+      });
+      return root;
+    };
+    const legend = legendList(series.map(s => ({ label: s.name, color: s.color })));
+    return chartFrame({ ...opts, table: { head: ['חודש', ...series.map(s => s.name)], rows: labels.map((l, i) => [monthLabel(l), ...series.map(s => s.values[i])]) } }, responsive(draw), legend);
+  }
+
+  // ---- טבעת: חלוקה לקטגוריות ----
+  function donutChart(opts, items, centerLabel) {
+    items = items.filter(i => i.value > 0);
+    const total = items.reduce((a, b) => a + b.value, 0);
+    if (!total) return emptyChart(opts);
+    if (items.length > 5) { const rest = items.slice(4).reduce((a, b) => a + b.value, 0); items = [...items.slice(0, 4), { label: 'אחר', value: rest }]; }
+    const S = 200, c = S / 2, R = 88, r = 58; const id = 'dc' + (++chartSeq);
+    const root = svg('svg', { viewBox: `0 0 ${S} ${S}`, role: 'img', class: 'donut', 'aria-label': `${opts.title}: ${items.map(i => `${i.label} ${i.value}`).join(', ')}` }, texDefs(id));
+    let a0 = -Math.PI / 2;
+    const pt2 = (a, rad) => [c + rad * Math.cos(a), c + rad * Math.sin(a)];
+    items.forEach((it, i) => {
+      let a1 = a0 + (it.value / total) * Math.PI * 2; if (items.length === 1) a1 -= 0.0001;
+      const large = a1 - a0 > Math.PI ? 1 : 0;
+      const [x0, y0] = pt2(a0, R), [x1, y1] = pt2(a1, R), [x2, y2] = pt2(a1, r), [x3, y3] = pt2(a0, r);
+      const d = `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`;
+      const color = it.color || CAT[i];
+      root.append(svg('path', { class: 'seg mark fade', 'data-k': 'k' + i, d, fill: color, 'data-tip': `${it.label}\n${nf.format(it.value)} (${pct(it.value, total)}%)`, tabindex: 0, 'aria-label': `${it.label}: ${it.value}` }));
+      if (texFill(id, i)) root.append(svg('path', { d, fill: texFill(id, i), 'pointer-events': 'none' }));
+      a0 = a1;
+    });
+    root.append(txt(c, c + 6, 'middle', nf.format(total), 'hero'), txt(c, c + 26, 'middle', centerLabel || 'סה"כ'));
+    const legend = legendList(items.map((it, i) => ({ label: it.label, color: it.color || CAT[i], value: nf.format(it.value), pct: pct(it.value, total) })));
+    return chartFrame({ ...opts, table: { head: ['קטגוריה', 'כמות', 'אחוז'], rows: items.map(it => [it.label, it.value, pct(it.value, total) + '%']) } }, h('div', { class: 'hero-row' }, root, legend));
+  }
+
+  // ---- עמודות אופקיות (גודל, גוון אחד) – העמודה יוצאת מימין ----
+  function hbarPath(xr, w, y, hh, rad) { const x = xr - w; rad = Math.min(rad, w / 2, hh / 2); return `M${xr},${y} H${x + rad} Q${x},${y} ${x},${y + rad} V${y + hh - rad} Q${x},${y + hh} ${x + rad},${y + hh} H${xr} Z`; }
+  function barChart(opts, items, { fmt = (v) => nf.format(v) } = {}) {
+    if (!items.length || items.every(i => !i.value)) return emptyChart(opts);
+    const max = Math.max(...items.map(i => i.value));
+    const draw = (W) => {
+      const row = 34, lw = Math.min(150, W * 0.34), vw = 48, H = items.length * row + 6;
+      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': `${opts.title}: ${items.map(i => `${i.label} ${fmt(i.value)}`).join(', ')}` });
+      const xr = W - lw; const span = W - lw - vw;
+      items.forEach((it, i) => {
+        const y = i * row + 6; const w = max ? Math.max(it.value / max * span, it.value ? 3 : 0) : 0;
+        root.append(txt(W - 2, y + 15, 'right', clip(it.label, Math.floor(lw / 7.5))));
+        root.append(svg('path', { class: 'mark grow h', 'data-k': 'b' + i, d: hbarPath(xr - 8, w, y + 3, row - 14, 4), fill: it.color || 'var(--s1)' }));
+        root.append(txt(xr - 8 - w - 6, y + 15, 'right', fmt(it.value), 'v'));
+        root.append(svg('rect', { class: 'hit', x: 0, y, width: W, height: row - 4, tabindex: 0, 'data-k': 'b' + i, 'data-tip': `${it.label}\n${fmt(it.value)}`, 'aria-label': `${it.label}: ${fmt(it.value)}` }));
+      });
+      root.append(svg('line', { class: 'axis', x1: xr - 8, x2: xr - 8, y1: 0, y2: H }));
+      return root;
+    };
+    return chartFrame({ ...opts, table: { head: ['', 'ערך'], rows: items.map(i => [i.label, fmt(i.value)]) } }, responsive(draw, 420));
+  }
+
+  // ---- עמודות מוערמות: החלטות גורמי תשתית (צבעי סטטוס + מקרא + טקסט) ----
+  function stackedChart(opts, rows, keys) {
+    if (!rows.length) return emptyChart(opts, 'עדיין לא נקבעו גורמי תשתית לבקשות בתקופה זו.');
+    const max = Math.max(...rows.map(r => keys.reduce((a, k) => a + (r[k.key] || 0), 0)));
+    const draw = (W) => {
+      const row = 36, lw = Math.min(160, W * 0.34), H = rows.length * row + 6; const id = 'sc' + (++chartSeq);
+      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': `${opts.title}: ${rows.map(r => `${r.name} – ${keys.map(k => `${k.label} ${r[k.key] || 0}`).join(', ')}`).join('; ')}` }, texDefs(id));
+      const span = W - lw - 44;
+      rows.forEach((r, i) => {
+        const y = i * row + 6; let xr = W - lw - 8; const tot = keys.reduce((a, k) => a + (r[k.key] || 0), 0);
+        root.append(txt(W - 2, y + 16, 'right', clip(r.name, Math.floor(lw / 7.5))));
+        keys.forEach((k, ki) => {
+          const v = r[k.key] || 0; if (!v) return;
+          const w = v / max * span;
+          root.append(svg('rect', { class: 'seg mark grow h', 'data-k': k.key, x: xr - w, y: y + 3, width: w, height: row - 14, rx: 3, fill: k.color,
+            tabindex: 0, 'data-tip': `${r.name} – ${k.label}\n${v} מתוך ${tot}`, 'aria-label': `${r.name}, ${k.label}: ${v}` }));
+          if (texFill(id, ki)) root.append(svg('rect', { x: xr - w, y: y + 3, width: w, height: row - 14, fill: texFill(id, ki), 'pointer-events': 'none' }));
+          xr -= w;
+        });
+        root.append(txt(xr - 6, y + 16, 'right', String(tot), 'v'));
+      });
+      return root;
+    };
+    const legend = legendList(keys.map(k => ({ label: k.label, color: k.color, value: nf.format(rows.reduce((a, r) => a + (r[k.key] || 0), 0)) })));
+    return chartFrame({ ...opts, table: { head: ['גורם', ...keys.map(k => k.label), 'סה"כ'], rows: rows.map(r => [r.name, ...keys.map(k => r[k.key] || 0), keys.reduce((a, k) => a + (r[k.key] || 0), 0)]) } }, responsive(draw), legend);
+  }
+
+  // ---- תקציב: מסגרת מול ביצוע (bullet) ----
+  function budgetChart(opts, rows) {
+    if (!rows || !rows.length) return emptyChart(opts, 'אין עדיין פרויקטים עם תקציב.');
+    const max = Math.max(...rows.map(r => Math.max(r.budget, r.spent))) || 1;
+    const draw = (W) => {
+      const row = 50, lw = Math.min(170, W * 0.34), H = rows.length * row + 4;
+      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': `${opts.title}: ${rows.map(r => `${r.name} נוצל ${pct(r.spent, r.budget)}%`).join(', ')}` });
+      const xr = W - lw - 8; const span = xr - 4;
+      rows.forEach((r, i) => {
+        const y = i * row + 4; const bw = r.budget / max * span; const sw = r.spent / max * span; const over = r.spent > r.budget;
+        root.append(txt(W - 2, y + 15, 'right', clip(r.name, Math.floor(lw / 7.5))));
+        root.append(svg('rect', { x: xr - bw, y: y + 4, width: bw, height: 16, rx: 4, fill: 'var(--surface-2)', stroke: 'var(--rule)' }));
+        root.append(svg('path', { class: 'mark grow h', d: hbarPath(xr, Math.max(sw, r.spent ? 3 : 0), y + 8, 8, 4), fill: over ? 'var(--st-crit)' : 'var(--s1)' }));
+        if (r.planned) { const px = xr - r.planned / max * span; root.append(svg('line', { x1: px, x2: px, y1: y + 1, y2: y + 23, stroke: 'var(--ink)', 'stroke-width': 2 })); }
+        root.append(txt(xr, y + 38, 'right', `נוצלו ${pct(r.spent, r.budget)}% · ${compactMoney(r.spent)} מתוך ${compactMoney(r.budget)}${over ? ' · חריגה' : ''}`, over ? 'v' : null));
+        root.append(svg('rect', { class: 'hit', x: 0, y, width: W, height: row - 4, tabindex: 0,
+          'data-tip': `${r.name}\nמסגרת: ${fmtMoney(r.budget)}\nבוצע: ${fmtMoney(r.spent)} (${pct(r.spent, r.budget)}%)\nמתוכנן: ${fmtMoney(r.planned)}`, 'aria-label': `${r.name}: נוצלו ${pct(r.spent, r.budget)}%` }));
+      });
+      return root;
+    };
+    const legend = legendList([{ label: 'בוצע בפועל', color: 'var(--s1)' }, { label: 'חריגה ממסגרת', color: 'var(--st-crit)' }, { label: 'מסגרת', color: 'var(--rule-strong)' }, { label: 'קו = מתוכנן', color: 'var(--ink)' }]);
+    return chartFrame({ ...opts, table: { head: ['פרויקט', 'מסגרת', 'בוצע', 'מתוכנן', 'ניצול'], rows: rows.map(r => [r.name, fmtMoney(r.budget), fmtMoney(r.spent), fmtMoney(r.planned), pct(r.spent, r.budget) + '%']) } }, responsive(draw), legend);
+  }
+
+  // ---- מד עמידה ביעד (מספר מוביל + טבעת) ----
+  function slaChart(opts, sla) {
+    const closed = sla.onTime + sla.late;
+    const p = closed ? pct(sla.onTime, closed) : null;
+    const S = 180, c = S / 2, R = 72;
+    const root = svg('svg', { viewBox: `0 0 ${S} ${S}`, role: 'img', class: 'gauge', 'aria-label': p === null ? 'אין עדיין בקשות שהסתיימו' : `${p}% מהבקשות טופלו בזמן` },
+      svg('circle', { cx: c, cy: c, r: R, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': 14 }));
+    if (p !== null) {
+      const len = 2 * Math.PI * R;
+      root.append(svg('circle', { class: 'draw', cx: c, cy: c, r: R, fill: 'none', stroke: p >= 80 ? 'var(--s3)' : p >= 50 ? 'var(--s4)' : 'var(--st-crit)', 'stroke-width': 14, 'stroke-linecap': 'round',
+        'stroke-dasharray': `${len * p / 100} ${len}`, transform: `rotate(-90 ${c} ${c})`, style: `--len:${len}` }));
+    }
+    root.append(txt(c, c + 8, 'middle', p === null ? '—' : p + '%', 'hero'), txt(c, c + 28, 'middle', 'טופלו בזמן'));
+    const facts = h('div', { class: 'facts' },
+      h('div', null, h('b', null, nf.format(sla.onTime)), ' הסתיימו בזמן · ', h('b', null, nf.format(sla.late)), ' באיחור'),
+      h('div', null, 'זמן טיפול ממוצע: ', h('b', null, sla.avgDays === null ? '—' : `${sla.avgDays} ימים`)),
+      h('div', null, 'פתוחות כעת: ', h('b', null, nf.format(sla.open)), ' · מהן בחריגה: ', h('b', { class: sla.openOverdue ? 'sev-critical' : '' }, nf.format(sla.openOverdue))));
+    return chartFrame({ ...opts, table: { head: ['מדד', 'ערך'], rows: [['הסתיימו בזמן', sla.onTime], ['הסתיימו באיחור', sla.late], ['אחוז עמידה ביעד', p === null ? '—' : p + '%'], ['זמן טיפול ממוצע (ימים)', sla.avgDays ?? '—'], ['פתוחות', sla.open], ['פתוחות בחריגה', sla.openOverdue]] } }, h('div', { class: 'hero-row' }, root, facts));
+  }
+
+  // ---- הרכבת גרפים מנתוני הדוח ----
+  function reportCharts(d, { compact = false } = {}) {
+    const out = [];
+    out.push(slaChart({ title: 'עמידה בזמני טיפול', sub: 'בקשות שהסתיימו לעומת היעד שנקבע להן' }, d.sla));
+    out.push(lineChart({ title: 'בקשות לאורך זמן', sub: `הוגשו ואושרו בכל חודש, ${d.months} חודשים אחרונים`, wide: !compact, csv: { name: 'trend' } },
+      d.trend.labels, [{ name: 'הוגשו', values: d.trend.submitted, color: 'var(--s1)' }, { name: 'אושרו', values: d.trend.approved, color: 'var(--s2)' }]));
+    out.push(donutChart({ title: 'לפי סוג בקשה', csv: { name: 'by-type' } }, Object.entries(d.byType).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ label: T(k), value: v })), 'בקשות'));
+    if (compact) return out;
+    out.push(barChart({ title: 'לפי סטטוס', sub: 'כמה בקשות נמצאות בכל שלב', csv: { name: 'by-status' } },
+      Object.keys(S.meta.statuses).filter(k => d.byStatus[k]).map(k => ({ label: ST(k), value: d.byStatus[k] }))));
+    out.push(stackedChart({ title: 'החלטות גורמי תשתית', sub: 'כמה בקשות כל גורם אישר, אישר בתנאים, דחה או טרם השיב', wide: true, csv: { name: 'infra' } }, d.infra, [
+      { key: 'approved', label: 'אישר', color: 'var(--st-good)' }, { key: 'conditions', label: 'אישר בתנאים', color: 'var(--st-warn)' },
+      { key: 'pending', label: 'ממתין', color: 'var(--st-none)' }, { key: 'rejected', label: 'דחה', color: 'var(--st-crit)' }]));
+    if (d.budget) out.push(budgetChart({ title: 'ניצול תקציב לפי פרויקט', sub: 'בוצע בפועל מתוך המסגרת', wide: true, csv: { name: 'budget' } }, d.budget));
+    if (d.tasks) out.push(donutChart({ title: 'משימות לפי סטטוס', csv: { name: 'tasks' } }, ['פתוחה', 'בביצוע', 'ממתינה', 'הושלמה'].map(k => ({ label: k, value: d.tasks[k] || 0 })), 'משימות'));
+    return out;
+  }
+
+  async function viewReports(main, q) {
+    const months = ['3', '6', '12', '24'].includes(q.months) ? q.months : '12';
+    const p = new URLSearchParams({ months }); if (q.type) p.set('type', q.type);
+    const d = await api('GET', '/api/reports?' + p);
+    const f = h('form', { class: 'filters-row', role: 'search', 'aria-label': 'סינון דוחות' },
+      h('div', { class: 'field' }, h('label', { for: 'rm' }, 'תקופה'), sel('months', [['3', '3 חודשים'], ['6', '6 חודשים'], ['12', '12 חודשים'], ['24', 'שנתיים']], months, { id: 'rm' })),
+      h('div', { class: 'field' }, h('label', { for: 'rt' }, 'סוג בקשה'), sel('type', [['', 'כל הסוגים'], ...Object.entries(S.meta.types)], q.type, { id: 'rt' })));
+    f.addEventListener('change', () => { const pp = new URLSearchParams({ months: f.months.value }); if (f.type.value) pp.set('type', f.type.value); location.hash = '#/reports?' + pp; });
+    main.replaceChildren(pageHead('דוחות וגרפים', `${nf.format(d.total)} בקשות בתקופה. ריחוף או מעבר במקלדת על גרף מציג פרטים; כל גרף זמין גם כטבלה.`,
+      h('button', { class: 'btn', type: 'button', onclick: () => window.print() }, icon('download'), 'הדפסה / PDF')), f, h('div', { class: 'charts' }, reportCharts(d)));
+  }
+
   // ---------- לוח בקרה ----------
   async function viewDashboard(main) {
-    const d = await api('GET', '/api/dashboard');
+    const [d, rep6] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/reports?months=6')]);
     const k = d.kpi;
     const kpi = (v, l, href, alert) => h(href ? 'a' : 'div', { class: 'kpi' + (alert && v ? ' alert' : ''), href }, h('div', { class: 'v' }, String(v)), h('div', { class: 'l' }, l));
     const hour = new Date().getHours();
     const greet = hour < 12 ? 'בוקר טוב' : hour < 17 ? 'צהריים טובים' : 'ערב טוב';
-    const total = Object.values(d.byStatus).reduce((a, b) => a + b, 0) || 1;
     main.replaceChildren(
       pageHead(`${greet}, ${S.me.full_name.split(' ')[0]}`, 'מה ממתין לך היום, ומה מתעכב.', can('requests.create') ? h('a', { class: 'btn primary', href: '#/requests/new' }, icon('plus'), 'בקשה חדשה') : null),
       h('div', { class: 'kpis' },
@@ -432,6 +733,8 @@
         kpi(k.fast, 'במסלול מזורז'),
         kpi(k.trackPending, 'ממתינות לאישור מסלול'),
         kpi(k.approved, 'אושרו')),
+      h('div', { class: 'charts', style: { 'margin-bottom': '16px' } }, reportCharts(rep6, { compact: true })),
+      h('p', { class: 'small', style: { margin: '-6px 0 16px' } }, h('a', { href: '#/reports' }, 'לכל הדוחות והגרפים')),
       h('div', { class: 'grid side' },
         h('section', { class: 'panel', 'aria-labelledby': 'rec-h' },
           h('div', { class: 'panel-head' }, h('h2', { id: 'rec-h' }, 'עודכנו לאחרונה')),
@@ -444,10 +747,6 @@
         h('div', null,
           d.pendingApprovals.length ? h('section', { class: 'panel' }, h('h2', null, 'ממתינות לחוות דעתך'),
             h('ul', { class: 'files' }, d.pendingApprovals.map(a => h('li', null, h('a', { class: 'fname', href: `#/requests/${a.request_id}` }, h('span', { class: 'ltr' }, a.number), ' – ', a.title))))) : null,
-          h('section', { class: 'panel' }, h('h2', null, 'התפלגות לפי סטטוס'),
-            Object.keys(d.byStatus).length ? h('div', { class: 'bars' }, Object.entries(d.byStatus).map(([s, c]) =>
-              h('div', { class: 'b' }, h('span', null, ST(s)), h('div', { class: 'meter', role: 'img', 'aria-label': `${ST(s)}: ${c}` }, h('i', { style: { '--w': Math.round(c / total * 100) + '%' } })), h('span', { class: 'num' }, String(c)))))
-              : h('p', { class: 'muted' }, 'אין נתונים עדיין.')),
           d.myTasks.length ? h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', null, 'המשימות שלי'), h('div', { class: 'actions' }, h('a', { href: '#/tasks', class: 'small' }, 'לכל המשימות'))),
             h('ul', { class: 'files' }, d.myTasks.map(t => h('li', null, h('span', { class: 'fname' }, t.title), h('span', { class: 'small muted' }, t.due_date ? 'עד ' + fmtDate(t.due_date) : ''), t.priority === 'דחופה' ? h('span', { class: 'chip late' }, 'דחופה') : null)))) : null,
           d.projects.length ? h('section', { class: 'panel' }, h('h2', null, 'פרויקטים פעילים'),
@@ -922,49 +1221,104 @@
   }
 
   // ---------- עיצוב ותצוגה ----------
+  const THEMES = [['drafting', 'שרטוט', '#F2F4F1', '#A61E5E'], ['concrete', 'בטון', '#ECECEA', '#2F5D50'], ['sand', 'חול', '#F1EEE6', '#1E5A8C'], ['ocean', 'אוקיינוס', '#EEF3F7', '#0B62B8'],
+    ['aurora', 'זוהר', '#F4F2FC', '#6A3BD3'], ['night', 'לילה תכנוני', '#0B1620', '#5CC8FF'], ['graphite', 'גרפיט', '#111213', '#8AB4FF']];
+  const PRESETS = [
+    ['classic', 'קלאסי', ['#F2F4F1', '#FFFFFF', '#A61E5E'], { theme: 'drafting', mode: 'auto', shape: 'soft', style: 'flat', bg: 'plain', width: 'regular', sidebar: 'full', header: 'blur', density: 'regular' }],
+    ['modern', 'מודרני', ['#E9E3FB', '#FFFFFF', '#6A3BD3'], { theme: 'aurora', mode: 'auto', shape: 'round', style: 'glass', bg: 'aurora', width: 'wide', sidebar: 'floating', header: 'blur', density: 'regular' }],
+    ['ocean', 'אוקיינוס', ['#DCE8F3', '#FFFFFF', '#0B62B8'], { theme: 'ocean', mode: 'light', shape: 'soft', style: 'raised', bg: 'gradient', width: 'wide', sidebar: 'full', header: 'blur', density: 'regular' }],
+    ['minimal', 'מינימליסטי', ['#ECECEA', '#ECECEA', '#2F5D50'], { theme: 'concrete', mode: 'light', shape: 'sharp', style: 'outline', bg: 'plain', width: 'regular', sidebar: 'compact', header: 'solid', density: 'compact' }],
+    ['night', 'לילה', ['#0B1620', '#10222F', '#5CC8FF'], { theme: 'night', shape: 'soft', style: 'glass', bg: 'grid', width: 'wide', sidebar: 'floating', header: 'blur', density: 'regular' }],
+    ['graphite', 'גרפיט', ['#111213', '#1A1C1E', '#8AB4FF'], { theme: 'graphite', shape: 'round', style: 'raised', bg: 'gradient', width: 'wide', sidebar: 'floating', header: 'blur', density: 'regular' }],
+    ['access', 'נגיש במיוחד', ['#FFFFFF', '#FFFFFF', '#7A0038'], { theme: 'drafting', mode: 'light', contrast: 'high', fontSize: '20', motion: 'reduced', chartTexture: 'on', chartAnim: 'off', style: 'outline', density: 'comfortable', bg: 'plain', sidebar: 'full' }],
+  ];
   function viewAppearance(main) {
     const draft = { ...PREF_DEFAULTS, ...S.prefs };
-    const rows = [];
+    const groups = [];
+    let section = null;
+    const status = h('p', { class: 'small', role: 'status', 'aria-live': 'polite' });
+    let previewCharts = h('div');
+    const refresh = () => {
+      const fix = applyPrefs(draft);
+      status.textContent = fix && fix.adjusted ? `הצבע שבחרת הוכהה מעט אוטומטית (${fix.accent}) כדי שטקסט בצבע הזה יהיה קריא.` : '';
+      const next = h('div', { class: 'charts' }, previewChartsBuild()); previewCharts.replaceWith(next); previewCharts = next;
+      for (const el of main.querySelectorAll('[data-pref]')) el.setAttribute('aria-pressed', String(draft[el.dataset.pref] === el.dataset.val));
+      for (const el of main.querySelectorAll('.preset')) el.setAttribute('aria-pressed', 'false');
+    };
+    const sectionHead = (t) => { section = h('div'); groups.push(h('h2', { class: 'pref-section' }, t), section); };
     function seg(key, label, opts) {
       const id = 'pref-' + key;
-      const group = h('div', { class: 'seg', role: 'group', 'aria-labelledby': id });
-      for (const [v, l] of opts) group.append(h('button', { type: 'button', 'aria-pressed': String(draft[key] === v), onclick: (e) => { draft[key] = v; applyPrefs(draft); for (const b of group.children) b.setAttribute('aria-pressed', String(b === e.currentTarget)); } }, l));
-      rows.push(h('div', { class: 'pref-row' }, h('span', { id, class: 'lbl', style: { 'font-weight': '600' } }, label), group));
+      const group = h('div', { class: 'seg', role: 'group', 'aria-labelledby': id },
+        opts.map(([v, l]) => h('button', { type: 'button', 'data-pref': key, 'data-val': v, 'aria-pressed': String(draft[key] === v), onclick: () => { draft[key] = v; refresh(); } }, l)));
+      section.append(h('div', { class: 'pref-row' }, h('span', { id, style: { 'font-weight': '600' } }, label), group));
     }
-    const themeRow = h('div', { class: 'swatches', role: 'group', 'aria-labelledby': 'pref-theme' });
-    for (const [v, l, c1, c2] of [['drafting', 'שרטוט', '#F2F4F1', '#A61E5E'], ['concrete', 'בטון', '#ECECEA', '#2F5D50'], ['sand', 'חול', '#F1EEE6', '#1E5A8C'], ['night', 'לילה תכנוני', '#0B1620', '#5CC8FF']]) {
-      themeRow.append(h('button', { class: 'swatch', type: 'button', 'aria-pressed': String(draft.theme === v), onclick: (e) => { draft.theme = v; draft.accent = ''; applyPrefs(draft); for (const b of themeRow.children) b.setAttribute('aria-pressed', String(b === e.currentTarget)); } },
-        h('i', { style: { background: `linear-gradient(135deg, ${c1} 50%, ${c2} 50%)` } }), l));
-    }
-    rows.push(h('div', { class: 'pref-row' }, h('span', { id: 'pref-theme', style: { 'font-weight': '600' } }, 'ערכת צבעים'), themeRow));
-    const accRow = h('div', { class: 'swatches', role: 'group', 'aria-labelledby': 'pref-acc' });
-    for (const [v, l] of [['', 'ברירת מחדל'], ['#A61E5E', 'מגנטה מדידה'], ['#1E5AA8', 'כחול מים'], ['#B3261E', 'אדום חשמל'], ['#2E7D32', 'ירוק ביוב'], ['#6A3FA0', 'סגול'], ['#9A4A00', 'כתום תקשורת']]) {
-      accRow.append(h('button', { class: 'swatch', type: 'button', 'aria-pressed': String((draft.accent || '') === v), onclick: (e) => { draft.accent = v; applyPrefs(draft); for (const b of accRow.children) b.setAttribute('aria-pressed', String(b === e.currentTarget)); } },
-        h('i', { style: { background: v || 'var(--accent)' } }), l));
-    }
-    rows.push(h('div', { class: 'pref-row' }, h('span', { id: 'pref-acc', style: { 'font-weight': '600' } }, 'צבע הדגשה'), accRow));
+    // ערכות מוכנות
+    const presetBox = h('div', { class: 'presets', role: 'group', 'aria-label': 'ערכות עיצוב מוכנות' }, PRESETS.map(([key, label, [bg, side, acc], vals]) => {
+      const pv = h('span', { class: 'pv', 'aria-hidden': 'true' }, h('i'), h('b'));
+      pv.style.background = bg; pv.querySelector('i').style.background = side; pv.querySelector('b').style.background = side === bg ? '#ffffff' : side; pv.querySelector('b').style.setProperty('--pa', acc);
+      if (side === bg) pv.querySelector('i').style.border = `1px solid ${acc}`;
+      return h('button', { class: 'preset', type: 'button', 'aria-pressed': 'false', onclick: (e) => {
+        Object.assign(draft, PREF_DEFAULTS, { fontSize: draft.fontSize, font: draft.font }, vals, { accent: '' }); refresh(); e.currentTarget.setAttribute('aria-pressed', 'true'); } }, pv, h('span', null, label));
+    }));
+    sectionHead('ערכות מוכנות'); section.append(h('p', { class: 'small muted' }, 'נקודת התחלה מהירה. אחרי הבחירה אפשר לשנות כל פרט למטה.'), presetBox);
+    // צבעים
+    sectionHead('צבעים');
+    section.append(h('div', { class: 'pref-row' }, h('span', { id: 'pref-theme', style: { 'font-weight': '600' } }, 'ערכת צבעים'),
+      h('div', { class: 'swatches', role: 'group', 'aria-labelledby': 'pref-theme' }, THEMES.map(([v, l, c1, c2]) => {
+        const i = h('i'); i.style.background = `linear-gradient(135deg, ${c1} 50%, ${c2} 50%)`;
+        return h('button', { class: 'swatch', type: 'button', 'data-pref': 'theme', 'data-val': v, 'aria-pressed': String(draft.theme === v), onclick: () => { draft.theme = v; draft.accent = ''; refresh(); } }, i, l);
+      }))));
+    const picker = h('input', { type: 'color', id: 'accent-pick', value: /^#[0-9a-f]{6}$/i.test(draft.accent) ? draft.accent : '#A61E5E' });
+    picker.addEventListener('input', () => { draft.accent = picker.value; refresh(); });
+    section.append(h('div', { class: 'pref-row' }, h('span', { id: 'pref-acc', style: { 'font-weight': '600' } }, 'צבע הדגשה'),
+      h('div', null, h('div', { class: 'swatches', role: 'group', 'aria-labelledby': 'pref-acc' },
+        [['', 'של הערכה'], ['#A61E5E', 'מגנטה'], ['#1E5AA8', 'כחול'], ['#B3261E', 'אדום'], ['#2E7D32', 'ירוק'], ['#6A3FA0', 'סגול'], ['#9A4A00', 'כתום'], ['#00796B', 'טורקיז']].map(([v, l]) => {
+          const i = h('i'); i.style.background = v || 'var(--accent)';
+          return h('button', { class: 'swatch', type: 'button', 'data-pref': 'accent', 'data-val': v, 'aria-pressed': String((draft.accent || '') === v), onclick: () => { draft.accent = v; refresh(); } }, i, l);
+        }), h('label', { class: 'color-pick', for: 'accent-pick' }, picker, 'צבע משלך')), status)));
     seg('mode', 'מצב תאורה', [['auto', 'לפי המכשיר'], ['light', 'בהיר'], ['dark', 'כהה']]);
-    seg('style', 'סגנון משטחים', [['flat', 'שטוח'], ['raised', 'מוגבה'], ['glass', 'זכוכית']]);
-    seg('shape', 'צורת פינות', [['sharp', 'חדות'], ['soft', 'מעוגלות'], ['round', 'עגולות']]);
-    seg('bg', 'רקע', [['plain', 'חלק'], ['grid', 'נייר שרטוט'], ['dots', 'נקודות']]);
+    seg('contrast', 'ניגודיות', [['normal', 'רגילה'], ['high', 'גבוהה']]);
+    // רקע ומשטחים
+    sectionHead('רקע ומשטחים');
+    seg('bg', 'רקע', [['plain', 'חלק'], ['gradient', 'גרדיאנט'], ['aurora', 'זוהר נע'], ['grid', 'נייר שרטוט'], ['dots', 'נקודות']]);
+    seg('style', 'כרטיסים', [['flat', 'שטוח'], ['raised', 'מוגבה'], ['glass', 'זכוכית'], ['outline', 'קו מתאר']]);
+    seg('shape', 'פינות', [['sharp', 'חדות'], ['soft', 'מעוגלות'], ['round', 'עגולות']]);
+    // פריסה
+    sectionHead('פריסה');
+    seg('width', 'רוחב תוכן', [['regular', 'רגיל'], ['wide', 'רחב'], ['full', 'מסך מלא']]);
+    seg('sidebar', 'תפריט צד', [['full', 'מלא'], ['floating', 'צף'], ['compact', 'סמלים בלבד']]);
+    seg('header', 'פס עליון', [['blur', 'שקוף מטושטש'], ['solid', 'אטום']]);
     seg('density', 'צפיפות', [['compact', 'צפופה'], ['regular', 'רגילה'], ['comfortable', 'מרווחת']]);
+    // טקסט
+    sectionHead('טקסט');
     seg('font', 'גופן', [['sans', 'נקי'], ['serif', 'קלאסי'], ['rounded', 'מעוגל'], ['mono', 'קבוע רוחב']]);
     seg('fontSize', 'גודל טקסט', [['14', 'קטן'], ['16', 'רגיל'], ['18', 'גדול'], ['20', 'גדול מאוד']]);
-    seg('contrast', 'ניגודיות', [['normal', 'רגילה'], ['high', 'גבוהה']]);
-    seg('motion', 'אנימציות', [['full', 'פעילות'], ['reduced', 'מופחתות']]);
-    seg('sidebar', 'תפריט צד', [['full', 'מלא'], ['compact', 'סמלים בלבד']]);
+    // תנועה וגרפים
+    sectionHead('תנועה וגרפים');
+    seg('motion', 'אנימציות בממשק', [['full', 'פעילות'], ['reduced', 'מופחתות']]);
+    seg('chartAnim', 'הנפשת גרפים', [['on', 'פעילה'], ['off', 'כבויה']]);
+    seg('chartGrid', 'קווי רשת', [['on', 'מוצגים'], ['off', 'מוסתרים']]);
+    seg('chartTexture', 'מרקם בגרפים', [['off', 'ללא'], ['on', 'קווים אלכסוניים']]);
+    section.append(h('p', { class: 'small muted' }, 'מרקם מוסיף הבחנה שלא תלויה בצבע – מומלץ לעיוורי צבעים ולהדפסה בשחור-לבן.'));
+
+    const sample = { months: 6, sla: { onTime: 18, late: 4, open: 9, openOverdue: 2, avgDays: 6.4 },
+      trend: { labels: (() => { const out = []; const d = new Date(); for (let i = 5; i >= 0; i--) { const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 1)); out.push(x.toISOString().slice(0, 7)); } return out; })(),
+        submitted: [6, 9, 7, 12, 10, 14], approved: [3, 6, 8, 7, 11, 10] }, byType: { planning: 14, execution: 11, completion: 6, infra: 4 } };
+    function previewChartsBuild() { const c = reportCharts(sample, { compact: true }); return [c[0], c[2]]; }
+    previewCharts = h('div', { class: 'charts' }, previewChartsBuild());
     const preview = h('section', { class: 'panel preview', 'aria-label': 'תצוגה מקדימה' }, h('h2', null, 'תצוגה מקדימה'),
       h('div', { class: 'req-head' }, h('div', { class: 'req-number' }, 'TH-2026-0042'), h('div', null, h('div', { class: 'req-title' }, 'הנחת קו מים ברחוב הדוגמה'), h('div', null, statusChip('coordination'), ' ', h('span', { class: 'chip fast' }, 'מזורז')))),
       routeLine({ status: 'coordination' }),
-      h('div', { class: 'approvals', style: { 'margin-top': '12px' } }, [['מים וביוב (תאגיד)', 'approved', 'אישר'], ['חברת החשמל', 'pending', 'ממתין']].map(([n, dd, l]) => h('div', { class: 'approval' }, h('span', { class: 'mark ' + markClass(n) }), h('div', null, h('div', { class: 'who' }, n), h('div', { class: 'note dec-' + dd }, l)), h('span')))),
-      h('div', { style: { display: 'flex', gap: '8px', 'margin-top': '12px', 'flex-wrap': 'wrap' } }, h('button', { class: 'btn primary', type: 'button' }, 'כפתור ראשי'), h('button', { class: 'btn', type: 'button' }, 'כפתור משני')));
+      h('div', { class: 'approvals', style: { margin: '12px 0' } }, [['מים וביוב (תאגיד)', 'approved', 'אישר'], ['חברת החשמל', 'pending', 'ממתין']].map(([n, dd, l]) => h('div', { class: 'approval' }, h('span', { class: 'mark ' + markClass(n) }), h('div', null, h('div', { class: 'who' }, n), h('div', { class: 'note dec-' + dd }, l)), h('span')))),
+      previewCharts,
+      h('div', { style: { display: 'flex', gap: '8px', 'margin-top': '12px', 'flex-wrap': 'wrap' } }, h('button', { class: 'btn primary', type: 'button' }, 'כפתור ראשי'), h('button', { class: 'btn', type: 'button' }, 'כפתור משני'), h('a', { href: '#/appearance' }, 'קישור לדוגמה')));
     const save = h('button', { class: 'btn primary', type: 'button', onclick: async () => {
       try { const r = await api('PUT', '/api/me/prefs', { prefs: draft }); S.prefs = r.prefs; applyPrefs(S.prefs); toast('העיצוב נשמר בחשבון שלך'); } catch (ex) { toast(ex.message, true); }
     } }, 'שמירת העיצוב');
     const cancel = h('button', { class: 'btn', type: 'button', onclick: () => { applyPrefs(S.prefs); viewAppearance(main); } }, 'ביטול השינויים');
-    const reset = h('button', { class: 'btn ghost', type: 'button', onclick: () => { Object.assign(draft, PREF_DEFAULTS); applyPrefs(draft); viewAppearance(main); } }, 'איפוס לברירת מחדל');
-    main.replaceChildren(pageHead('עיצוב ותצוגה', 'השינויים מוצגים מיד לתצוגה מקדימה, ונשמרים בחשבון שלך רק אחרי "שמירת העיצוב".', save, cancel, reset),
-      h('div', { class: 'grid side' }, h('section', { class: 'panel', 'aria-label': 'אפשרויות עיצוב' }, rows), preview));
+    const reset = h('button', { class: 'btn ghost', type: 'button', onclick: () => { Object.assign(draft, PREF_DEFAULTS); refresh(); } }, 'איפוס לברירת מחדל');
+    main.replaceChildren(pageHead('עיצוב ותצוגה', 'השינויים מוצגים מיד, ונשמרים בחשבון שלך (בכל מכשיר) רק אחרי "שמירת העיצוב".', save, cancel, reset),
+      h('div', { class: 'grid side' }, h('section', { class: 'panel', 'aria-label': 'אפשרויות עיצוב' }, groups), h('div', { class: 'sticky-preview' }, preview)));
   }
 
   // ---------- חשבון ----------

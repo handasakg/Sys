@@ -176,7 +176,7 @@ route('PUT', '/api/me/prefs', (req) => {
   requireAuth(req);
   const p = req.body.prefs || {};
   const clean = {};
-  const allowed = { theme: 30, mode: 10, shape: 10, style: 12, density: 12, font: 20, fontSize: 4, accent: 7, motion: 10, sidebar: 12, contrast: 10, bg: 12 };
+  const allowed = { theme: 30, mode: 10, shape: 10, style: 12, density: 12, font: 20, fontSize: 4, accent: 7, motion: 10, sidebar: 12, contrast: 10, bg: 12, width: 10, header: 10, chartTexture: 4, chartGrid: 4, chartAnim: 4 };
   for (const [k, max] of Object.entries(allowed)) if (p[k] !== undefined) clean[k] = v.str(String(p[k]), { max, name: k, pattern: /^[#\w-]+$/ });
   db.prepare('UPDATE users SET prefs = ? WHERE id = ?').run(JSON.stringify(clean), req.user.id);
   return { ok: true, prefs: clean };
@@ -659,6 +659,62 @@ route('GET', '/api/dashboard', (req) => {
     recent: visible.sort((a, b) => (b.updated_at > a.updated_at ? 1 : -1)).slice(0, 8),
   };
 });
+// ---------------- דוחות וגרפים ----------------
+// כל הנתונים מסוננים לפי מה שהמשתמש רשאי לראות; תקציב ומשימות רק עם ההרשאות שלהם.
+route('GET', '/api/reports', (req) => {
+  requireAuth(req);
+  const months = [3, 6, 12, 24].includes(Number(req.query.months)) ? Number(req.query.months) : 12;
+  const type = W.TYPES[req.query.type] ? req.query.type : null;
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months + 1, 1));
+  const startIso = start.toISOString().slice(0, 19).replace('T', ' ');
+  const all = db.prepare('SELECT * FROM requests WHERE created_at >= ?').all(startIso)
+    .filter(r => canViewRequest(req, r) && (!type || r.type === type)).map(decorate);
+  const keys = [];
+  for (let i = 0; i < months; i++) { const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + i, 1)); keys.push(d.toISOString().slice(0, 7)); }
+  const submitted = Object.fromEntries(keys.map(k => [k, 0])); const approved = Object.fromEntries(keys.map(k => [k, 0]));
+  const byStatus = {}; const byType = {};
+  let onTime = 0, late = 0, daysSum = 0, daysN = 0;
+  for (const r of all) {
+    byStatus[r.status] = (byStatus[r.status] || 0) + 1;
+    byType[r.type] = (byType[r.type] || 0) + 1;
+    const sm = (r.submitted_at || r.created_at).slice(0, 7); if (sm in submitted) submitted[sm]++;
+    if (r.closed_at && (r.status === 'approved' || r.status === 'closed')) { const cm = r.closed_at.slice(0, 7); if (cm in approved) approved[cm]++; }
+    if (r.closed_at && r.submitted_at) {
+      daysSum += (Date.parse(r.closed_at.replace(' ', 'T') + 'Z') - Date.parse(r.submitted_at.replace(' ', 'T') + 'Z')) / 86400000; daysN++;
+      if (r.due_at) { if (r.closed_at <= r.due_at) onTime++; else late++; }
+    }
+  }
+  const openNow = all.filter(r => W.OPEN_STATUSES.includes(r.status));
+  const ids = all.map(r => r.id);
+  const infra = [];
+  if (ids.length) {
+    const rows = db.prepare(`SELECT b.name, ra.decision, COUNT(*) AS c FROM request_approvals ra JOIN infra_bodies b ON b.id = ra.infra_body_id
+      WHERE ra.request_id IN (SELECT value FROM json_each(?)) GROUP BY b.name, ra.decision`).all(JSON.stringify(ids));
+    const map = {};
+    for (const x of rows) { map[x.name] = map[x.name] || { name: x.name, pending: 0, approved: 0, conditions: 0, rejected: 0 }; map[x.name][x.decision] = x.c; }
+    infra.push(...Object.values(map).sort((a, b) => (b.pending + b.approved + b.conditions + b.rejected) - (a.pending + a.approved + a.conditions + a.rejected)));
+  }
+  const budget = can(req, 'budget.view') ? db.prepare(`SELECT p.id, p.name, p.budget,
+      (SELECT COALESCE(SUM(amount),0) FROM budget_entries b WHERE b.project_id = p.id AND kind = 'actual') AS spent,
+      (SELECT COALESCE(SUM(amount),0) FROM budget_entries b WHERE b.project_id = p.id AND kind = 'planned') AS planned
+      FROM projects p WHERE p.status != 'בוטל' ORDER BY p.budget DESC LIMIT 12`).all() : null;
+  let tasks = null;
+  if (can(req, 'tasks.view')) {
+    const rows = can(req, 'tasks.manage')
+      ? db.prepare('SELECT status, COUNT(*) AS c FROM tasks GROUP BY status').all()
+      : db.prepare('SELECT status, COUNT(*) AS c FROM tasks WHERE assignee_id = ? GROUP BY status').all(req.user.id);
+    tasks = Object.fromEntries(rows.map(x => [x.status, x.c]));
+  }
+  return {
+    months, type, total: all.length,
+    trend: { labels: keys, submitted: keys.map(k => submitted[k]), approved: keys.map(k => approved[k]) },
+    byStatus, byType,
+    sla: { onTime, late, openOverdue: openNow.filter(r => r.overdue).length, open: openNow.length, avgDays: daysN ? Math.round(daysSum / daysN * 10) / 10 : null },
+    infra, budget, tasks,
+  };
+});
+
 route('GET', '/api/notifications', (req) => {
   requireAuth(req);
   return { items: db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(req.user.id) };

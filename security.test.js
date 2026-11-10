@@ -224,6 +224,13 @@ class Client {
     r = await A.req('GET', '/api/notifications');
     rec('תהליך', 'המגיש מקבל התראות על שינויי סטטוס', r.data.items.length >= 3, r.data.items.length + ' התראות');
 
+    // ---------- דוחות: סינון לפי הרשאה ----------
+    const repB = (await users.applB.c.req('GET', '/api/reports?months=12')).data;
+    const repE = (await E.req('GET', '/api/reports?months=12')).data;
+    rec('הרשאות (IDOR)', 'דוחות וגרפים: מבקש רואה רק את הבקשות שלו, בלי תקציב ומשימות', repB.total === 0 && repB.budget === null && repB.tasks === null && repE.total >= 1, `מבקש: ${repB.total}, מהנדס: ${repE.total}`);
+    r = await E.req('GET', "/api/reports?months=1;DROP&type=' OR 1=1");
+    rec('אימות טפסים בשרת', 'פרמטרים לא תקינים בדוחות מוחלפים בברירת מחדל', r.status === 200 && r.data.months === 12 && r.data.type === null);
+
     // ---------- SQL Injection ----------
     const sqli = [];
     for (const q of ["' OR 1=1 --", "%' OR '1'='1", "1; DROP TABLE users; --", "' UNION SELECT password_hash,1,1 FROM users --"]) {
