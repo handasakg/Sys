@@ -1,0 +1,19 @@
+{
+  "name": "handasa-coordination",
+  "version": "1.0.0",
+  "private": true,
+  "description": "מערכת תיאום הנדסי – מעקב בקשות, אישורים, פרויקטים, מסמכים, לוחות זמנים ותקציב",
+  "main": "server.js",
+  "engines": { "node": ">=22.16" },
+  "scripts": {
+    "start": "NODE_ENV=production node --disable-warning=ExperimentalWarning server.js",
+    "dev": "node --disable-warning=ExperimentalWarning server.js",
+    "create-admin": "node --disable-warning=ExperimentalWarning create-admin.js",
+    "test:security": "node --disable-warning=ExperimentalWarning security.test.js",
+    "scan:secrets": "node scan-secrets.js",
+    "build": "node build.js",
+    "test:browser": "node --disable-warning=ExperimentalWarning browser.test.js"
+  },
+  "dependencies": {},
+  "devDependencies": { "esbuild": "^0.25.0" }
+}

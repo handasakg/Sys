@@ -1,0 +1,43 @@
+# מערכת תיאום הנדסי
+
+מעקב בקשות לתיאום תכנון, אישור לביצוע עבודה ואישור גמר עבודה; גורמי תשתית, פרויקטים, משימות, מסמכים, לוח זמנים ותקציב. עברית RTL, ללא תלויות חיצוניות (Node.js 22.16 ומעלה בלבד).
+
+## הפעלה
+```bash
+cp .env.example .env          # מלאו PUBLIC_URL ושאר הערכים
+node create-admin.js   # יצירת מנהל ראשון (אין משתמש ברירת מחדל)
+npm start                      # NODE_ENV=production
+```
+בפרודקשן השרת מצפה ל-HTTPS: הציבו אותו מאחורי Nginx/Load Balancer עם תעודת TLS, והגדירו `TRUST_PROXY=1`.
+
+## דוא"ל
+לשליחת קישורי איפוס סיסמה במייל מלאו `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` ב-`.env`. בלי זה בקשות איפוס מגיעות כהתראה למנהל.
+
+## אחרי שינוי ב-app.js או app.css
+```bash
+npm run build   # יוצר app.min.js / app.min.css. אם הם ישנים מהמקור, השרת מגיש את המקור.
+```
+
+## גיבוי
+גיבוי אוטומטי של המסד והקבצים כל `BACKUP_INTERVAL_MINUTES` (ברירת מחדל 60), שמירה 30 יום. כדי שהגיבוי יהיה מחוץ לשרת, הפנו את `BACKUP_DIR` לדיסק ענן מעוגן (S3/Azure Blob דרך mount, תיקייה מסונכרנת וכו').
+
+## בדיקות
+```bash
+npm run test:security   # 91 בדיקות אבטחה מול שרת רץ
+node browser.test.js   # בדיקות דפדפן (דורש Playwright + Chrome)
+npm run scan:secrets    # סריקת סודות בקבצים ובהיסטוריית git
+```
+
+## מבנה
+כל הקבצים יושבים בתיקייה אחת, בלי תתי-תיקיות. מעלים את כולם כמו שהם לאותה תיקייה בשרת.
+
+- `server.js` – נקודת ההפעלה: HTTPS, CORS, CSRF, rate limit, כותרות אבטחה
+- `routes.js` – כל ה-API ובדיקות ההרשאה
+- `permissions.js` – קטלוג 26 ההרשאות ותפקידי ברירת המחדל
+- `uploads.js`, `auth.js`, `security.js`, `db.js`, `backup.js`, `mailer.js`, `config.js`, `workflow.js` – מודולי השרת
+- `index.html`, `app.js`, `app.css` (+ `.min`), `privacy.html`, `accessibility.html`, `404.html` – ממשק המשתמש
+- `create-admin.js`, `build.js`, `scan-secrets.js` – כלי ניהול; `security.test.js`, `browser.test.js` – בדיקות
+
+השרת מגיש לדפדפן **רק** את 13 הקבצים הציבוריים שברשימה ב-`server.js`. קוד השרת, `.env`, מסד הנתונים והבדיקות לא נגישים מהרשת, למרות שהם באותה תיקייה.
+
+תיקיית `data` (מסד נתונים, קבצים מצורפים, גיבויים ולוגים) **נוצרת אוטומטית** בהפעלה הראשונה – אין צורך להעלות אותה.

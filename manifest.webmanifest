@@ -1,0 +1,1 @@
+{ "name": "מערכת תיאום הנדסי", "short_name": "תיאום הנדסי", "lang": "he", "dir": "rtl", "start_url": "/", "display": "standalone", "background_color": "#F2F4F1", "theme_color": "#17252A", "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }] }

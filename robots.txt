@@ -1,0 +1,7 @@
+# מערכת פנימית: רק עמודי המידע הציבוריים פתוחים לסריקה
+User-agent: *
+Allow: /$
+Allow: /privacy.html
+Allow: /accessibility.html
+Disallow: /api/
+Sitemap: https://coord.example.gov.il/sitemap.xml
