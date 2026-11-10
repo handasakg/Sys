@@ -164,7 +164,7 @@
   }
 
   // ---------- עיצוב ותצוגה ----------
-  const PREF_DEFAULTS = { theme: 'ocean', mode: 'auto', shape: 'soft', style: 'glass', density: 'regular', font: 'sans', fontSize: '16', accent: '', motion: 'full', sidebar: 'floating', contrast: 'normal', bg: 'aurora',
+  const PREF_DEFAULTS = { theme: 'ocean', mode: 'light', shape: 'soft', style: 'glass', density: 'regular', font: 'sans', fontSize: '16', accent: '', motion: 'full', sidebar: 'floating', contrast: 'normal', bg: 'aurora',
     width: 'regular', header: 'blur', chartTexture: 'off', chartGrid: 'on', chartAnim: 'on' };
   const DARK_ONLY = ['night', 'graphite'];
   // ניגודיות: צבע הדגשה מותאם אישית מתוקן אוטומטית עד שהוא קריא (4.5:1) על המשטח של ערכת הנושא
@@ -331,7 +331,7 @@
 
   // ---------- מעטפת האפליקציה ----------
   const NAV = [
-    { g: null, items: [['#/', 'לוח בקרה', 'home', null]] },
+    { g: null, items: [['#/', 'דף הבית', 'home', null]] },
     { g: 'בקשות תיאום', items: [
       ['#/requests?scope=pending_me', 'ממתין לטיפולי', 'inbox', ['requests.view_own', 'requests.view_all', 'approvals.decide']],
       ['#/requests?scope=mine', 'הבקשות שלי', 'file', ['requests.create', 'requests.view_own']],
@@ -362,8 +362,9 @@
       for (const [href, label, ic] of items) nav.append(h('a', { href, 'data-href': href, title: label }, icon(ic), h('span', { class: 'lbl' }, label)));
     }
     const sidebar = h('aside', { class: 'sidebar', id: 'sidebar', 'aria-label': 'תפריט' },
-      h('div', { class: 'brand' + (S.logo ? ' has-logo' : '') }, h('img', { class: 'brand-mark' + (S.logo ? ' custom' : ''), src: logoUrl(), alt: S.logo ? `לוגו ${S.org}` : '' }),
-        h('div', { class: 'brand-text' }, h('div', { class: 'brand-title' }, S.title), h('div', { class: 'brand-org' }, S.org))),
+      h('a', { class: 'brand' + (S.logo ? ' has-logo' : ''), href: '#/', 'aria-label': `${S.title} – מעבר לדף הבית`, title: 'לדף הבית' },
+        h('img', { class: 'brand-mark' + (S.logo ? ' custom' : ''), src: logoUrl(), alt: '' }),
+        h('div', { class: 'brand-text', 'aria-hidden': 'true' }, h('div', { class: 'brand-title' }, S.title), h('div', { class: 'brand-org' }, S.org))),
       nav, h('div', { class: 'side-foot' }, h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'פרטיות')));
     const bellCount = h('span', { class: 'badge-dot', hidden: !S.unread }, String(S.unread || ''));
     const bell = h('button', { class: 'btn ghost icon-btn', type: 'button', 'aria-label': 'התראות', 'aria-haspopup': 'true', 'aria-expanded': 'false', onclick: () => toggleNotifs(bell, bellCount) }, icon('bell'), bellCount);
@@ -372,14 +373,39 @@
       h('form', { role: 'search', class: 'grow', onsubmit: (e) => { e.preventDefault(); const q = e.target.q.value.trim(); location.hash = '#/requests?scope=' + (can('requests.view_all') ? 'all' : 'mine') + (q ? '&q=' + encodeURIComponent(q) : ''); } },
         h('label', { for: 'gsearch', class: 'sr-only' }, 'חיפוש בקשה'),
         h('input', { id: 'gsearch', name: 'q', type: 'search', placeholder: 'חיפוש לפי מספר, נושא או כתובת', maxlength: 100, style: { 'max-width': '420px' } })),
-      h('div', { class: 'spacer' }), bell,
-      h('span', { class: 'small muted', 'aria-label': 'משתמש מחובר' }, S.me.full_name),
+      h('div', { class: 'spacer' }), clockEl(), bell, userCard(),
       h('button', { class: 'btn ghost icon-btn', type: 'button', 'aria-label': 'יציאה מהמערכת', title: 'יציאה', onclick: logout }, icon('out')));
     const main = h('main', { class: 'content', id: 'main', tabindex: '-1' });
     const footer = h('footer', { class: 'footer' }, h('span', null, `© ${new Date().getFullYear()} ${S.org}`),
       h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'מדיניות פרטיות'));
     root.replaceChildren(h('div', { class: 'app' }, sidebar, h('div', { class: 'main' }, top, main, footer)));
     shell = { main, nav, sidebar, menuBtn };
+  }
+  // שעון ותאריך בפס העליון – מתעדכן כל דקה (בלי הכרזות לקורא מסך בכל עדכון)
+  let clockTimer = null;
+  function clockEl() {
+    const time = h('span', { class: 'clock-time num' }); const date = h('span', { class: 'clock-date' });
+    const el = h('time', { class: 'clock', title: '' }, time, date);
+    const tick = () => {
+      const d = new Date();
+      time.textContent = d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+      date.textContent = d.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+      el.setAttribute('datetime', d.toISOString()); el.setAttribute('aria-label', `${date.textContent}, השעה ${time.textContent}`);
+    };
+    tick();
+    if (clockTimer) clearInterval(clockTimer);
+    clockTimer = setInterval(() => { if (!el.isConnected) { clearInterval(clockTimer); clockTimer = null; return; } tick(); }, 15000);
+    return el;
+  }
+  // כרטיס המשתמש המחובר: ראשי תיבות, שם בולט במסגרת, תפקיד וגורם תשתית
+  function userCard() {
+    const u = S.me; const parts = u.full_name.trim().split(/\s+/);
+    const initials = (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+    const sub = [u.role_name, u.infra_name].filter(Boolean).join(' · ');
+    return h('a', { class: 'user-card', href: '#/account', title: 'החשבון שלי', 'aria-label': `מחובר: ${u.full_name}${sub ? ', ' + sub : ''}. מעבר לחשבון שלי` },
+      h('span', { class: 'uc-avatar', 'aria-hidden': 'true' }, initials),
+      h('span', { class: 'uc-text', 'aria-hidden': 'true' }, h('span', { class: 'uc-name' }, u.full_name),
+        h('span', { class: 'uc-role' }, u.role_name || ''), u.infra_name ? h('span', { class: 'uc-infra' }, h('i', { class: 'mark ' + markClass(u.infra_name) }), u.infra_name) : null));
   }
   function toggleSidebar(open) {
     const { sidebar, menuBtn } = shell;
@@ -440,14 +466,14 @@
       const m = path.match(re);
       if (m) {
         try { await fn(main, q, m[1] ? Number(m[1]) : undefined, path); }
-        catch (ex) { if (ex.message !== 'נדרשת התחברות') main.replaceChildren(pageHead('שגיאה'), h('div', { class: 'form-error', role: 'alert' }, ex.message), h('a', { class: 'btn', href: '#/' }, 'חזרה ללוח הבקרה')); }
+        catch (ex) { if (ex.message !== 'נדרשת התחברות') main.replaceChildren(pageHead('שגיאה'), h('div', { class: 'form-error', role: 'alert' }, ex.message), h('a', { class: 'btn', href: '#/' }, 'חזרה לדף הבית')); }
         const h1 = main.querySelector('h1');
         document.title = (h1 ? h1.textContent + ' – ' : '') + S.title;
         main.focus({ preventScroll: true }); window.scrollTo(0, 0);
         return;
       }
     }
-    main.replaceChildren(pageHead('העמוד לא נמצא', 'הכתובת אינה קיימת במערכת.'), h('a', { class: 'btn primary', href: '#/' }, 'חזרה ללוח הבקרה'));
+    main.replaceChildren(pageHead('העמוד לא נמצא', 'הכתובת אינה קיימת במערכת.'), h('a', { class: 'btn primary', href: '#/' }, 'חזרה לדף הבית'));
     document.title = 'העמוד לא נמצא – ' + S.title;
   }
   function pageHead(title, sub, ...actions) {
@@ -740,7 +766,7 @@
       h('button', { class: 'btn', type: 'button', onclick: () => window.print() }, icon('download'), 'הדפסה / PDF')), f, h('div', { class: 'charts' }, reportCharts(d)));
   }
 
-  // ---------- לוח בקרה ----------
+  // ---------- דף הבית ----------
   async function viewDashboard(main) {
     const [d, rep6] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/reports?months=6')]);
     const k = d.kpi;
@@ -1256,8 +1282,8 @@
   const THEMES = [['drafting', 'שרטוט', '#F2F4F1', '#A61E5E'], ['concrete', 'בטון', '#ECECEA', '#2F5D50'], ['sand', 'חול', '#F1EEE6', '#1E5A8C'], ['ocean', 'אוקיינוס', '#EEF3F7', '#0B62B8'],
     ['aurora', 'זוהר', '#F4F2FC', '#6A3BD3'], ['night', 'לילה תכנוני', '#0B1620', '#5CC8FF'], ['graphite', 'גרפיט', '#111213', '#8AB4FF']];
   const PRESETS = [
-    ['classic', 'קלאסי', ['#F2F4F1', '#FFFFFF', '#A61E5E'], { theme: 'drafting', mode: 'auto', shape: 'soft', style: 'flat', bg: 'plain', width: 'regular', sidebar: 'full', header: 'blur', density: 'regular' }],
-    ['modern', 'מודרני', ['#E9E3FB', '#FFFFFF', '#6A3BD3'], { theme: 'aurora', mode: 'auto', shape: 'round', style: 'glass', bg: 'aurora', width: 'wide', sidebar: 'floating', header: 'blur', density: 'regular' }],
+    ['classic', 'קלאסי', ['#F2F4F1', '#FFFFFF', '#A61E5E'], { theme: 'drafting', mode: 'light', shape: 'soft', style: 'flat', bg: 'plain', width: 'regular', sidebar: 'full', header: 'blur', density: 'regular' }],
+    ['modern', 'מודרני', ['#E9E3FB', '#FFFFFF', '#6A3BD3'], { theme: 'aurora', mode: 'light', shape: 'round', style: 'glass', bg: 'aurora', width: 'wide', sidebar: 'floating', header: 'blur', density: 'regular' }],
     ['ocean', 'אוקיינוס', ['#DCE8F3', '#FFFFFF', '#0B62B8'], { theme: 'ocean', mode: 'light', shape: 'soft', style: 'raised', bg: 'gradient', width: 'wide', sidebar: 'full', header: 'blur', density: 'regular' }],
     ['minimal', 'מינימליסטי', ['#ECECEA', '#ECECEA', '#2F5D50'], { theme: 'concrete', mode: 'light', shape: 'sharp', style: 'outline', bg: 'plain', width: 'regular', sidebar: 'compact', header: 'solid', density: 'compact' }],
     ['night', 'לילה', ['#0B1620', '#10222F', '#5CC8FF'], { theme: 'night', shape: 'soft', style: 'glass', bg: 'grid', width: 'wide', sidebar: 'floating', header: 'blur', density: 'regular' }],
@@ -1367,6 +1393,7 @@
     const u = S.me;
     main.replaceChildren(pageHead('החשבון שלי'), h('div', { class: 'grid two' },
       h('section', { class: 'panel' }, h('h2', null, 'פרטים'), h('dl', { class: 'dl' }, h('dt', null, 'שם'), h('dd', null, u.full_name), h('dt', null, 'שם משתמש'), h('dd', { class: 'ltr' }, u.username),
+        h('dt', null, 'תפקיד'), h('dd', null, u.role_name || '—'), h('dt', null, 'גורם תשתית'), h('dd', null, u.infra_name || 'לא משויך'),
         h('dt', null, 'דוא"ל'), h('dd', { class: 'ltr' }, u.email || '—'), h('dt', null, 'מחלקה'), h('dd', null, u.department || '—'), h('dt', null, 'כניסה אחרונה'), h('dd', null, fmtDateTime(u.last_login))),
         h('h3', { style: { 'margin-top': '16px' } }, 'ההרשאות שלך'), h('p', { class: 'small muted' }, `${S.perms.size} הרשאות פעילות. לשינוי פנו למנהל המערכת.`)), form));
   }

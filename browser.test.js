@@ -105,7 +105,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     // ברירת מחדל חדשה + זכור אותי
     await page.goto(base + '/'); await page.waitForSelector('form');
     const def = await page.evaluate(() => { const d = document.documentElement.dataset; return `${d.theme}/${d.bg}/${d.style}/${d.shape}/${d.sidebar}`; });
-    rec('עיצוב', 'ברירת המחדל: אוקיינוס, רקע זוהר נע, כרטיסי זכוכית, פינות מעוגלות, תפריט צף', def === 'ocean/aurora/glass/soft/floating', def);
+    rec('עיצוב', 'ברירת המחדל: אוקיינוס בהיר, רקע זוהר נע, כרטיסי זכוכית, פינות מעוגלות, תפריט צף', def === 'ocean/aurora/glass/soft/floating' && await page.evaluate(() => document.documentElement.dataset.mode) === 'light', def);
     const rememberBox = await page.evaluate(() => { const c = document.querySelector('input[name=remember]'); return c && c.type === 'checkbox' && !!c.closest('label') && c.getBoundingClientRect().width >= 24; });
     rec('זכור אותי', 'במסך הכניסה יש תיבת "זכור אותי" עם תווית והסבר', !!rememberBox);
     const lg = await page.evaluate(() => {
@@ -246,6 +246,16 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await pl.screenshot({ path: path.join(SHOTS, 'login-logo-1280.png') }); await ctxL.close();
     page.once('dialog', d => d.accept());
     await page.click('text=הסרת לוגו'); await page.click('dialog[open] .btn.danger'); await page.waitForTimeout(400);
+
+    // פס עליון: כרטיס משתמש, שעון, לוגו לדף הבית, "דף הבית"
+    await page.goto(base + '/#/admin/users'); await page.waitForSelector('.user-card');
+    const top = await page.evaluate(() => ({ card: document.querySelector('.user-card').textContent, clock: document.querySelector('time.clock').getAttribute('aria-label'),
+      nav: document.querySelector('.nav a[href="#/"]').textContent, border: getComputedStyle(document.querySelector('.user-card')).borderTopWidth }));
+    await page.click('a.brand'); await page.waitForTimeout(400);
+    const home = await page.evaluate(() => location.hash === '#/' && document.querySelector('.nav a[href="#/"]').getAttribute('aria-current') === 'page');
+    rec('פס עליון', 'השם במסגרת עם תפקיד, שעון ותאריך, לחיצה על הלוגו מחזירה לדף הבית, ו"דף הבית" בתפריט',
+      top.card.includes('דנה לוי') && top.card.includes('מנהל מערכת') && /השעה \d{2}:\d{2}/.test(top.clock) && top.nav === 'דף הבית' && top.border === '2px' && home, JSON.stringify(top));
+    await page.screenshot({ path: path.join(SHOTS, 'topbar-1280.png'), clip: { x: 0, y: 0, width: 1280, height: 140 } });
 
     // משתמש חדש: שדות חובה
     await page.goto(base + '/#/admin/users'); await page.waitForSelector('h1');

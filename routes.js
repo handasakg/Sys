@@ -105,7 +105,9 @@ route('GET', '/api/auth/me', (req) => {
   if (!req.user) return status(401, { error: 'לא מחובר', title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null });
   const u = req.user;
   const unread = db.prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read = 0').get(u.id).c;
-  return { user: publicUser(u), perms: permsList(req), csrf: req.session.csrf, prefs: JSON.parse(u.prefs || '{}'),
+  const roleName = db.prepare('SELECT name FROM roles WHERE id = ?').get(u.role_id)?.name || '';
+  const infraName = u.infra_body_id ? db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(u.infra_body_id)?.name || null : null;
+  return { user: { ...publicUser(u), role_name: roleName, infra_name: infraName }, perms: permsList(req), csrf: req.session.csrf, prefs: JSON.parse(u.prefs || '{}'),
     title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, unread,
     meta: { types: W.TYPES, statuses: W.STATUSES, tracks: W.TRACKS, trackStatus: W.TRACK_STATUS,
       files: { allowed: up.allowedExt(), maxMb: Math.round(up.maxBytes() / 1048576) } } };
