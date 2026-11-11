@@ -109,17 +109,22 @@ function sendSmtp({ to, subject, text, attachments = [] }) {
 
 // ---------- Brevo API (HTTPS) ----------
 const senderOf = (from) => { const email = addr(from); const name = clean(from).replace(/<[^>]*>/, '').replace(/^["']|["']$/g, '').trim(); return name && name !== email ? { email, name } : { email }; };
+// מנקה רווחים ומרכאות שהועתקו בטעות עם המפתח
+const brevoKey = () => String(env.BREVO_API_KEY || '').trim().replace(/^["']|["']$/g, '').trim();
 async function sendBrevo({ to, subject, text, attachments = [] }) {
+  const key = brevoKey();
+  if (/^xsmtpsib-/.test(key)) throw new Error('Brevo API: הוזן מפתח SMTP (מתחיל ב-xsmtpsib). צריך מפתח API שמתחיל ב-xkeysib, מ-SMTP & API ← API Keys.');
   const body = { sender: senderOf(env.MAIL_FROM), to: [{ email: addr(to) }], subject: clean(subject), textContent: String(text) };
   if (attachments.length) body.attachment = attachments.map(a => ({ name: clean(a.filename), content: Buffer.from(a.content).toString('base64') }));
   let res;
   try {
     res = await fetch(env.BREVO_API_URL || 'https://api.brevo.com/v3/smtp/email', { method: 'POST', signal: AbortSignal.timeout(20000),
-      headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
+      headers: { 'api-key': key, 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
   } catch (e) { throw new Error('Brevo API: אין חיבור לשרת (' + (e.cause && e.cause.code || e.message) + ')'); }
   const txt = await res.text(); let j = {}; try { j = JSON.parse(txt); } catch { /* */ }
   if (!res.ok) {
-    if (res.status === 401) throw new Error('Brevo API: המפתח ב-BREVO_API_KEY שגוי (נדרש מפתח API, לא מפתח SMTP)');
+    if (res.status === 401 && /ip/i.test(j.message || '')) throw new Error(`Brevo API: כתובת השרת לא מאושרת ב-Brevo. ב-Brevo: Settings ← Security ← Authorized IPs ← Deactivate blocking. (${j.message})`);
+    if (res.status === 401) throw new Error(`Brevo API: Brevo לא מזהה את המפתח ב-BREVO_API_KEY (${j.message || 'unauthorized'}). צרו מפתח API חדש (מתחיל ב-xkeysib) והעתיקו אותו במלואו.`);
     throw new Error(`Brevo API (${res.status}): ${(j.message || txt).slice(0, 200)}`);
   }
   return { transport: 'brevo', id: j.messageId || null };

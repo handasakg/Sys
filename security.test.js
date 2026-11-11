@@ -962,7 +962,7 @@ class Client {
         && c0.key === 'xkeysib-test' && c0.body.sender.email === 'no-reply@example.gov.il' && c0.body.sender.name === 'מערכת תיאום' && c0.body.to[0].email === 'tester@example.gov.il' && /אימייל בדיקה/.test(c0.body.subject), JSON.stringify(c0.body).slice(0, 160));
       mode = 'badkey';
       const bad6 = await a6.req('POST', '/api/admin/mail/test', { to: 'tester@example.gov.il' });
-      rec('דוא"ל', 'מפתח Brevo שגוי – השגיאה מוצגת בבירור באימייל הבדיקה', bad6.status === 502 && /BREVO_API_KEY/.test(bad6.data.error), bad6.data.error);
+      rec('דוא"ל', 'מפתח Brevo שגוי – השגיאה מוצגת בבירור באימייל הבדיקה, עם ההודעה של Brevo', bad6.status === 502 && /BREVO_API_KEY/.test(bad6.data.error) && /Key not found/.test(bad6.data.error), bad6.data.error);
       srv.kill(); await new Promise(res => srv.on('exit', res)); brevo.close();
     }
 
