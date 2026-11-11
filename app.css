@@ -745,3 +745,13 @@ dialog.viewer-dlg { width: min(1100px, calc(100vw - 24px)); max-width: none; }
 .type-bodies { display: flex; flex-direction: column; gap: 6px; }
 .police-form .contact-fs { border: 1px solid var(--rule); border-radius: 12px; padding: 8px 12px 2px; margin: 4px 0 12px; }
 .police-form .contact-fs legend { font-weight: 700; padding: 0 6px; }
+.mail-result:empty { display: none; }
+.mail-result { margin-top: 10px; }
+.mail-ok { display: flex; align-items: center; gap: 6px; color: var(--ok); font-weight: 650; margin: 0; }
+.mail-ok svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2.4; flex: none; }
+.mail-help { margin-top: 12px; } .mail-help summary { cursor: pointer; font-weight: 650; }
+.mail-help code { font-size: .82rem; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.env-table { border-collapse: collapse; width: 100%; margin: 4px 0 10px; font-size: .88rem; }
+.env-table th, .env-table td { border: 1px solid var(--rule); padding: 5px 8px; text-align: start; vertical-align: top; }
+.env-table th { background: var(--surface-2); width: 1%; white-space: nowrap; font-weight: 500; }
+.env-table td[dir=ltr] { text-align: right; }

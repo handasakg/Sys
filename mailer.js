@@ -1,6 +1,8 @@
 'use strict';
-// שליחת דוא"ל דרך שרת SMTP של הארגון, ללא תלויות חיצוניות.
-// תומך ב-TLS מלא (פורט 465, SMTP_SECURE=1) וב-STARTTLS (פורט 587). סיסמת SMTP לא תישלח לעולם בחיבור לא מוצפן.
+// שליחת דוא"ל ללא תלויות חיצוניות, בשתי דרכים:
+// • SMTP (שרת הארגון / Brevo בפורט 2525): TLS מלא (465, SMTP_SECURE=1) או STARTTLS. סיסמה לא נשלחת לעולם בחיבור לא מוצפן.
+// • Brevo API (HTTPS): כשמוגדר BREVO_API_KEY. עובד גם כש-Render חוסם את פורטי ה-SMTP בשרת החינמי.
+// בחירה: MAIL_TRANSPORT=smtp|brevo, ואם לא נקבע – Brevo API כשיש מפתח, אחרת SMTP.
 const net = require('node:net');
 const tls = require('node:tls');
 const os = require('node:os');
@@ -15,7 +17,19 @@ function smtpConfig() {
     rejectUnauthorized: env.SMTP_TLS_REJECT_UNAUTHORIZED !== '0',
   };
 }
-const isConfigured = () => !!smtpConfig();
+function transport() {
+  const want = (env.MAIL_TRANSPORT || '').toLowerCase();
+  const brevoOk = !!(env.BREVO_API_KEY && env.MAIL_FROM); const smtpOk = !!smtpConfig();
+  if (want === 'smtp') return smtpOk ? 'smtp' : null;
+  if (want === 'brevo') return brevoOk ? 'brevo' : null;
+  return brevoOk ? 'brevo' : smtpOk ? 'smtp' : null;
+}
+const isConfigured = () => !!transport();
+// תיאור ההגדרה (בלי סודות) – למסך ההגדרות
+function describe() {
+  const t = transport(); const c = smtpConfig();
+  return { transport: t, from: env.MAIL_FROM || null, smtp: c ? `${c.host}:${c.port}` : null, brevoKey: !!env.BREVO_API_KEY };
+}
 
 const clean = (s) => String(s).replace(/[\r\n]/g, ' ').trim(); // מניעת הזרקת כותרות
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
@@ -23,7 +37,7 @@ const encHeader = (s) => `=?UTF-8?B?${b64(clean(s))}?=`;
 const addr = (s) => { const m = clean(s).match(/<([^<>\s]+@[^<>\s]+)>|^([^<>\s]+@[^<>\s]+)$/); if (!m) throw new Error('כתובת דוא"ל לא תקינה'); return m[1] || m[2]; };
 
 // attachments: [{ filename, content: Buffer, contentType }]
-function send({ to, subject, text, attachments = [] }) {
+function sendSmtp({ to, subject, text, attachments = [] }) {
   const cfg = smtpConfig();
   if (!cfg) return Promise.reject(new Error('SMTP לא מוגדר'));
   const rcpt = addr(to); const from = addr(cfg.from);
@@ -93,4 +107,28 @@ function send({ to, subject, text, attachments = [] }) {
   });
 }
 
-module.exports = { send, isConfigured };
+// ---------- Brevo API (HTTPS) ----------
+const senderOf = (from) => { const email = addr(from); const name = clean(from).replace(/<[^>]*>/, '').replace(/^["']|["']$/g, '').trim(); return name && name !== email ? { email, name } : { email }; };
+async function sendBrevo({ to, subject, text, attachments = [] }) {
+  const body = { sender: senderOf(env.MAIL_FROM), to: [{ email: addr(to) }], subject: clean(subject), textContent: String(text) };
+  if (attachments.length) body.attachment = attachments.map(a => ({ name: clean(a.filename), content: Buffer.from(a.content).toString('base64') }));
+  let res;
+  try {
+    res = await fetch(env.BREVO_API_URL || 'https://api.brevo.com/v3/smtp/email', { method: 'POST', signal: AbortSignal.timeout(20000),
+      headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
+  } catch (e) { throw new Error('Brevo API: אין חיבור לשרת (' + (e.cause && e.cause.code || e.message) + ')'); }
+  const txt = await res.text(); let j = {}; try { j = JSON.parse(txt); } catch { /* */ }
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Brevo API: המפתח ב-BREVO_API_KEY שגוי (נדרש מפתח API, לא מפתח SMTP)');
+    throw new Error(`Brevo API (${res.status}): ${(j.message || txt).slice(0, 200)}`);
+  }
+  return { transport: 'brevo', id: j.messageId || null };
+}
+
+function send(msg) {
+  const t = transport();
+  if (t === 'brevo') return sendBrevo(msg);
+  if (t === 'smtp') return sendSmtp(msg).then(() => ({ transport: 'smtp' }));
+  return Promise.reject(new Error('הדוא"ל עדיין לא מוגדר בשרת. ההוראות מופיעות למטה, ב"איך מגדירים?".'));
+}
+module.exports = { send, isConfigured, describe };

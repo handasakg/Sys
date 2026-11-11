@@ -1206,7 +1206,10 @@
         field('פרויקט', inp('project_name', { value: r.project_name || '', maxlength: 200 }))),
       field('נושא הבקשה', inp('title', { value: r.title || '', maxlength: 200 }), { required: true }),
       field('תיאור העבודה', area('description', { value: r.description || '', maxlength: 5000 }), { hint: 'מה מתוכנן, היקף העבודה, תשתיות מושפעות.' }),
-      field('זמן עבודה', inp('work_time', { value: r.work_time || '', maxlength: 200, placeholder: 'למשל: ימים א׳-ה׳' }), { hint: 'מגיע אוטומטית מטופס המשטרה בהגשת הבקשה.' }),
+      h('div', { class: 'row' },
+        field('זמן עבודה', inp('work_time', { value: r.work_time || '', maxlength: 200, placeholder: 'למשל: ימים א׳-ה׳' })),
+        field('שעות עבודה', inp('work_hours', { value: r.work_hours || '', maxlength: 100, placeholder: 'למשל: 07:00-19:00', dir: 'ltr' }))),
+      h('p', { class: 'small muted', style: { margin: '-6px 0 12px' } }, 'זמן העבודה ושעות העבודה מגיעים אוטומטית מטופס המשטרה בהגשת הבקשה.'),
       h('div', { class: 'actions', style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap' } },
         h('button', { class: 'btn primary', type: 'submit', value: 'save' }, 'שמירת שינויים'),
         h('a', { class: 'btn ghost', href: `#/requests/${id}` }, 'ביטול')));
@@ -1267,7 +1270,8 @@
       h('dt', null, 'פרויקט'), h('dd', null, r.project_name || '—'),
       h('dt', null, 'משתמשים משויכים'), h('dd', null, d.members.length ? d.members.map(m => m.full_name).join(', ') : '—'),
       h('dt', null, 'הוגשה'), h('dd', null, fmtDateTime(r.submitted_at)),
-      h('dt', null, 'זמן עבודה'), h('dd', null, r.work_time || '—'));
+      h('dt', null, 'זמן עבודה'), h('dd', null, r.work_time || '—'),
+      h('dt', null, 'שעות עבודה'), h('dd', null, r.work_hours ? h('span', { dir: 'ltr' }, r.work_hours) : '—'));
 
     // גורמי תשתית
     const active = ['review', 'coordination'].includes(r.status);
@@ -1967,6 +1971,42 @@
       e.preventDefault(); if (!validate(loginForm, lgErr)) return;
       try { await api('PUT', '/api/admin/settings', { login_heading: loginForm.login_heading.value, login_text: loginForm.login_text.value }); await refreshMe(); toast('מסך הכניסה עודכן'); } catch (ex) { showErr(lgErr, ex.message); }
     });
+    // דוא"ל: מצב ההגדרה ואימייל בדיקה
+    const ml = s.mail || {};
+    const mlResult = h('div', { class: 'mail-result', role: 'status', 'aria-live': 'polite' });
+    const mlTo = inp('test_to', { type: 'email', value: S.me.email || '', maxlength: 200, dir: 'ltr', autocomplete: 'email' });
+    const tName = { smtp: 'SMTP', brevo: 'Brevo API' };
+    const mlErr = errBox();
+    const mlForm = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'דוא"ל'), mlErr,
+      h('dl', { class: 'dl' },
+        h('dt', null, 'מצב'), h('dd', null, ml.transport ? h('span', { class: 'chip ok-chip' }, `מוגדר – ${tName[ml.transport]}`) : h('span', { class: 'chip late' }, 'לא מוגדר')),
+        h('dt', null, 'כתובת השולח'), h('dd', { dir: 'ltr', style: { 'text-align': 'right' } }, ml.from || '—'),
+        ml.transport === 'smtp' ? [h('dt', null, 'שרת SMTP'), h('dd', { dir: 'ltr', style: { 'text-align': 'right' } }, ml.smtp)] : null),
+      field('שליחת אימייל בדיקה אל', mlTo, { required: true }),
+      h('button', { class: 'btn primary', type: 'submit' }, icon('send'), 'שליחת אימייל בדיקה'), mlResult,
+      h('details', { class: 'mail-help' }, h('summary', null, 'איך מגדירים? (Render + Brevo)'),
+        h('p', { class: 'small' }, 'מוסיפים את המשתנים ב-Render: השירות ← Environment. השרת החינמי של Render חוסם את פורטי הדואר הרגילים, ולכן הדרך המומלצת היא Brevo API:'),
+        h('table', { class: 'env-table' }, h('tbody', null,
+          [['BREVO_API_KEY', 'מפתח API מ-Brevo (SMTP & API ← API Keys)'], ['MAIL_FROM', 'כתובת השולח שאומתה ב-Brevo']].map(([k, d0]) =>
+            h('tr', null, h('th', { scope: 'row' }, h('code', { dir: 'ltr' }, k)), h('td', null, d0))))),
+        h('p', { class: 'small' }, 'או, במקום ה-API, SMTP של Brevo בפורט 2525:'),
+        h('table', { class: 'env-table' }, h('tbody', null,
+          [['SMTP_HOST', 'smtp-relay.brevo.com'], ['SMTP_PORT', '2525'], ['SMTP_USER', 'ה-Login מ-Brevo'], ['SMTP_PASS', 'מפתח SMTP מ-Brevo']].map(([k, d0]) =>
+            h('tr', null, h('th', { scope: 'row' }, h('code', { dir: 'ltr' }, k)), h('td', { dir: /^[\w.-]+$/.test(d0) ? 'ltr' : null }, d0))))),
+        h('p', { class: 'small muted' }, 'המפתחות נשמרים רק בשרת ולא מוצגים כאן. אחרי השמירה ב-Render, השירות עולה מחדש ואפשר לשלוח אימייל בדיקה.')));
+    mlForm.addEventListener('submit', async (e) => {
+      e.preventDefault(); mlResult.replaceChildren();
+      if (!validate(mlForm, mlErr)) return;
+      const btn = mlForm.querySelector('[type=submit]');
+      try {
+        const r = await submitting(btn, () => api('POST', '/api/admin/mail/test', { to: mlTo.value.trim() }));
+        mlResult.replaceChildren(h('p', { class: 'mail-ok' }, icon('check'), ` נשלח בהצלחה דרך ${tName[r.transport]} אל ${r.to}. בדקו את תיבת הדואר (וגם את תיקיית הספאם).`));
+      } catch (ex) {
+        if (/לא מוגדר/.test(ex.message)) mlForm.querySelector('.mail-help').open = true;
+        mlResult.replaceChildren(h('div', { class: 'form-error', role: 'alert' }, h('strong', null, 'השליחה נכשלה: '), h('span', { dir: 'auto' }, ex.message),
+          /timeout|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|אין חיבור/i.test(ex.message) && (!ml.transport || ml.transport === 'smtp') ? h('p', { style: { margin: '6px 0 0' } }, 'נראה שהחיבור לשרת ה-SMTP חסום (כך ב-Render החינמי). הגדירו BREVO_API_KEY כדי לשלוח דרך Brevo API.') : null));
+      }
+    });
     // תזכורות לגורמי תשתית
     const rmErr = errBox();
     const rmForm = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'תזכורות לגורמי תשתית'), rmErr,
@@ -2045,7 +2085,7 @@
           if (!(await confirmDlg('חזרה ללוגו ברירת המחדל', 'להסיר את הלוגו שהועלה ולחזור ללוגו ברירת המחדל?', 'חזרה לברירת המחדל', true))) return;
           try { await api('DELETE', '/api/admin/logo'); await refreshMe(); toast('חזרנו ללוגו ברירת המחדל'); renderShell(); route(); } catch (ex) { toast(ex.message, true); }
         } }, 'חזרה ללוגו ברירת המחדל') : null), lStatus);
-    main.replaceChildren(pageHead('הגדרות וקבצים', 'גורמי התשתית עברו למסך "תפקידים והרשאות", בלשונית משלהם.'), h('div', { class: 'grid two' }, h('div', null, logoPanel, files), h('div', null, general, rmForm, loginForm, gmForm, numbering, guide)));
+    main.replaceChildren(pageHead('הגדרות וקבצים', 'גורמי התשתית עברו למסך "תפקידים והרשאות", בלשונית משלהם.'), h('div', { class: 'grid two' }, h('div', null, logoPanel, files), h('div', null, general, mlForm, rmForm, loginForm, gmForm, numbering, guide)));
   }
   async function refreshMe() {
     const me = await api('GET', '/api/auth/me');

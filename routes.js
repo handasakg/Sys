@@ -251,6 +251,7 @@ function requestFields(b) {
     helka: v.str(b.helka, { max: 20, name: 'חלקה', pattern: /^[\d\s-]*$/ }),
     project_name: v.str(b.project_name, { max: 200, name: 'פרויקט' }),
     work_time: v.str(b.work_time, { max: 200, name: 'זמן עבודה' }),
+    work_hours: v.str(b.work_hours, { max: 100, name: 'שעות עבודה' }),
     planned_start: v.date(b.planned_start, { name: 'תאריך התחלה' }),
     planned_end: v.date(b.planned_end, { name: 'תאריך סיום' }),
   };
@@ -355,8 +356,8 @@ route('PUT', '/api/requests/:id', (req) => {
   if (!canEditRequest(req, r)) throw new HttpError(403, 'אין הרשאה לערוך בקשה זו');
   const f = requestFields({ ...r, ...req.body, __currentType: r.type });
   if (f.planned_start && f.planned_end && f.planned_end < f.planned_start) throw new sec.ValidationError('תאריך סיום לפני תאריך התחלה');
-  db.prepare(`UPDATE requests SET type=?, title=?, description=?, address=?, gush=?, helka=?, project_name=?, work_time=?, planned_start=?, planned_end=?, updated_at=? WHERE id=?`)
-    .run(f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_name, f.work_time, f.planned_start, f.planned_end, nowIso(), r.id);
+  db.prepare(`UPDATE requests SET type=?, title=?, description=?, address=?, gush=?, helka=?, project_name=?, work_time=?, work_hours=?, planned_start=?, planned_end=?, updated_at=? WHERE id=?`)
+    .run(f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_name, f.work_time, f.work_hours, f.planned_start, f.planned_end, nowIso(), r.id);
   history(r.id, req.user.id, 'עודכנה', null);
   // שינוי סוג הבקשה: הגורמים מסתנכרנים לגורמים הקבועים של הסוג החדש
   if (f.type !== r.type && syncTypeChain(r.id, f.type)) history(r.id, req.user.id, 'גורמי התשתית עודכנו לפי סוג הבקשה', typeChain(f.type).map(id => (db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(id) || {}).name).join(' ← '));
@@ -435,6 +436,24 @@ function runReminders(now = Date.now()) {
   if (sent.length) console.log(`[reminders] נשלחו ${sent.length} תזכורות`);
   return { sent: sent.length, items: sent };
 }
+// אימייל בדיקה מההגדרות: מראה מיד אם הדוא"ל עובד, ובאיזו דרך (SMTP או Brevo API), ומה השגיאה אם לא
+route('POST', '/api/admin/mail/test', async (req) => {
+  requirePerm(req, 'admin.settings');
+  const rl = sec.rateLimit('mailtest:' + req.user.id, 10, 60 * 60000, { persist: true });
+  if (!rl.ok) return status(429, { error: 'יותר מדי אימיילי בדיקה. נסו שוב בעוד שעה.' });
+  const to = v.str(req.body.to, { required: true, max: 200, name: 'כתובת לבדיקה', pattern: v.EMAIL });
+  const info = mailer.describe();
+  try {
+    const out = await mailer.send({ to, subject: `אימייל בדיקה – ${sysTitle()}`,
+      text: `שלום,\n\nזהו אימייל בדיקה מ${sysTitle()}.\nאם קיבלתם אותו, שליחת הדוא"ל מהמערכת עובדת.\n\nדרך השליחה: ${out_label(info.transport)}\nנשלח על ידי: ${req.user.full_name}\n\n${sysTitle()}` });
+    audit(req, 'mail_test', { ok: true, transport: out.transport });
+    return { ok: true, transport: out.transport, to };
+  } catch (e) {
+    audit(req, 'mail_test', { ok: false, transport: info.transport, error: e.message }, 'warning');
+    return status(502, { ok: false, transport: info.transport, error: e.message });
+  }
+});
+function out_label(t) { return t === 'brevo' ? 'Brevo API' : t === 'smtp' ? 'SMTP' : 'לא מוגדר'; }
 route('POST', '/api/admin/reminders/run', (req) => {
   requirePerm(req, 'admin.settings');
   const out = runReminders();
@@ -1069,7 +1088,7 @@ route('GET', '/api/admin/settings', (req) => {
     sla_regular_days: +getSetting('sla.regular_days'),
     org_name: getSetting('org.name'), system_title: getSetting('org.system_title'),
     req_prefix: getSetting('requests.prefix'), req_with_year: getSetting('requests.with_year') === '1', req_pad: +getSetting('requests.pad'),
-    reminder_enabled: reminderSettings().enabled, reminder_days: reminderSettings().days, reminder_repeat_days: reminderSettings().repeat, govmap_token: getSetting('govmap.token') || '', govmap_env: !!config.govmapToken, guidelines: getSetting('approval.guidelines') || '', login_heading: getSetting('login.heading') || '', login_text: getSetting('login.text') || '', public_apply: getSetting('public.apply') !== '0',
+    mail: mailer.describe(), reminder_enabled: reminderSettings().enabled, reminder_days: reminderSettings().days, reminder_repeat_days: reminderSettings().repeat, govmap_token: getSetting('govmap.token') || '', govmap_env: !!config.govmapToken, guidelines: getSetting('approval.guidelines') || '', login_heading: getSetting('login.heading') || '', login_text: getSetting('login.text') || '', public_apply: getSetting('public.apply') !== '0',
     req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'), docs_visibility: docsOwnOnly() ? 'own' : 'request',
   };
 });
@@ -1340,9 +1359,9 @@ route('POST', '/api/public/apply', async (req, res) => {
       const userId = Number(u.lastInsertRowid);
       const number = nextRequestNumber();
       const title = `${type.name} – ${project}`.slice(0, 200);
-      const rq = db.prepare(`INSERT INTO requests (number, type, title, description, project_name, address, loc_x, loc_y, loc_z, loc_label, work_time, applicant_id, assignee_id, status, track, track_status, applicant_kind, planned_start, submitted_at, due_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', 'regular', 'none', ?, ?, ?, ?)`)
-        .run(number, type.key, title, police.description, project, loc.label, loc.x, loc.y, loc.z, loc.label, police.work_time, userId, handlers[0] || null, kind, police.date, nowIso(), addDays(slaDays('regular', 'none')));
+      const rq = db.prepare(`INSERT INTO requests (number, type, title, description, project_name, address, loc_x, loc_y, loc_z, loc_label, work_time, work_hours, applicant_id, assignee_id, status, track, track_status, applicant_kind, planned_start, submitted_at, due_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', 'regular', 'none', ?, ?, ?, ?)`)
+        .run(number, type.key, title, police.description, project, loc.label, loc.x, loc.y, loc.z, loc.label, police.work_time, police.work_hours, userId, handlers[0] || null, kind, police.date, nowIso(), addDays(slaDays('regular', 'none')));
       const requestId = Number(rq.lastInsertRowid);
       for (const h of handlers) db.prepare('INSERT OR IGNORE INTO user_requests (user_id, request_id) VALUES (?, ?)').run(h, requestId);
       chain.forEach((bid, i) => db.prepare('INSERT OR IGNORE INTO request_approvals (request_id, infra_body_id, seq) VALUES (?, ?, ?)').run(requestId, bid, i + 1));

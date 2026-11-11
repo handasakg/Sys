@@ -148,7 +148,7 @@ for (const [t, c, def] of [['users', 'applicant_kind', 'TEXT'], ['users', 'addre
   ['request_approvals', 'seq', 'INTEGER NOT NULL DEFAULT 0'], ['request_approvals', 'notified_at', 'TEXT'], ['documents', 'visibility', "TEXT NOT NULL DEFAULT 'default'"],
   ['requests', 'fix_auto_approval', 'INTEGER'], ['requests', 'fix_auto_by', 'INTEGER'],
   ['requests', 'loc_x', 'REAL'], ['requests', 'loc_y', 'REAL'], ['requests', 'loc_z', 'REAL'], ['requests', 'loc_label', 'TEXT'],
-  ['requests', 'work_time', 'TEXT'], ['infra_bodies', 'contact_user_id', 'INTEGER'], ['tasks', 'infra_body_id', 'INTEGER'], ['request_approvals', 'reminded_at', 'TEXT'], ['request_approvals', 'reminders', 'INTEGER NOT NULL DEFAULT 0']]) {
+  ['requests', 'work_time', 'TEXT'], ['infra_bodies', 'contact_user_id', 'INTEGER'], ['tasks', 'infra_body_id', 'INTEGER'], ['request_approvals', 'reminded_at', 'TEXT'], ['request_approvals', 'reminders', 'INTEGER NOT NULL DEFAULT 0'], ['requests', 'work_hours', 'TEXT']]) {
   if (!hasCol(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
 }
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('approval.guidelines', ?)").run(require('./documents').DEFAULT_GUIDELINES);
@@ -175,6 +175,7 @@ db.prepare("UPDATE settings SET value = ? WHERE key = 'login.text' AND value = ?
 // מטפלים אוטומטיים לסוגי בקשות בוטלו
 db.exec("UPDATE request_types SET handler_ids = '[]' WHERE handler_ids != '[]'");
 // זמן העבודה מטופס המשטרה עובר גם לבקשה עצמה
+db.exec("UPDATE requests SET work_hours = (SELECT json_extract(p.data, '$.work_hours') FROM request_police p WHERE p.request_id = requests.id) WHERE work_hours IS NULL AND EXISTS (SELECT 1 FROM request_police p WHERE p.request_id = requests.id)");
 db.exec("UPDATE requests SET work_time = (SELECT json_extract(p.data, '$.work_time') FROM request_police p WHERE p.request_id = requests.id) WHERE work_time IS NULL AND EXISTS (SELECT 1 FROM request_police p WHERE p.request_id = requests.id)");
 for (const [k, val] of Object.entries({ 'requests.prefix': 'TH', 'requests.with_year': '1', 'requests.pad': '4' })) db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, val);
 

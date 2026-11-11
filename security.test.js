@@ -925,7 +925,45 @@ class Client {
       rec('מסמך אישור', 'באישור מנהל המערכת – המגיש מקבל דוא"ל עם מסמך האישור כקובץ PDF מצורף', r.status === 200 && hasPdf && attOk);
       const av2 = await appl.req('GET', `/api/requests/${reqId5}`);
       rec('מסמך אישור', 'מסמך האישור מופיע לפותח הבקשה בבקשה עצמה', !!av2.data.approvalDoc && av2.data.request.status === 'approved');
+      // אימייל בדיקה מההגדרות (SMTP)
+      {
+        mails.length = 0;
+        const t1 = await ad.req('POST', '/api/admin/mail/test', { to: 'tester@example.gov.il' });
+        await new Promise(res => setTimeout(res, 300));
+        const tNo = await mapper.c.req('POST', '/api/admin/mail/test', { to: 'x@example.gov.il' });
+        const tBad = await ad.req('POST', '/api/admin/mail/test', { to: 'not-an-email' });
+        const st5 = (await ad.req('GET', '/api/admin/settings')).data.mail;
+        rec('דוא"ל', 'כפתור "שליחת אימייל בדיקה" שולח דרך SMTP ומדווח הצלחה; רק למנהל, עם אימות כתובת', t1.status === 200 && t1.data.transport === 'smtp' && mails.some(m => m.to === 'tester@example.gov.il')
+          && tNo.status === 403 && tBad.status === 400 && st5.transport === 'smtp' && !JSON.stringify(st5).includes('pass'), JSON.stringify([t1.status, st5]));
+      }
       srv.kill('SIGTERM'); await new Promise(res => srv.on('exit', res)); smtp.close();
+    }
+
+    // ---------- 6) שליחה דרך Brevo API (שרת מדומה) ----------
+    {
+      const http = require('node:http'); const calls = []; let mode = 'ok';
+      const brevo = http.createServer((q, res) => { let b = ''; q.on('data', d => { b += d; }); q.on('end', () => {
+        calls.push({ path: q.url, key: q.headers['api-key'], body: JSON.parse(b || '{}') });
+        if (mode === 'badkey') { res.writeHead(401, { 'content-type': 'application/json' }); return res.end('{"message":"Key not found","code":"unauthorized"}'); }
+        res.writeHead(201, { 'content-type': 'application/json' }); res.end('{"messageId":"<test@brevo>"}');
+      }); });
+      await new Promise(res => brevo.listen(4829, '127.0.0.1', res));
+      const d6 = fs.mkdtempSync(path.join(os.tmpdir(), 'coord-brevo-'));
+      const adminPw6 = pw();
+      const env6 = { NODE_ENV: 'production', FORCE_HTTPS: '0', DATA_DIR: d6, UPLOAD_DIR: path.join(d6, 'u'), BACKUP_DIR: path.join(d6, 'b'), LOG_DIR: path.join(d6, 'l'),
+        BREVO_API_KEY: 'xkeysib-test', BREVO_API_URL: 'http://127.0.0.1:4829/v3/smtp/email', MAIL_FROM: 'מערכת תיאום <no-reply@example.gov.il>',
+        SMTP_HOST: '127.0.0.1', SMTP_PORT: '1', ADMIN_USERNAME: 'root6', ADMIN_FULLNAME: 'מנהל', ADMIN_PASSWORD: adminPw6 };
+      srv = await startServer(env6, 4806);
+      const a6 = new Client('http://127.0.0.1:4806'); r = await a6.login('root6', adminPw6); a6.csrf = r.data.csrf;
+      const st6 = (await a6.req('GET', '/api/admin/settings')).data.mail;
+      const ok6 = await a6.req('POST', '/api/admin/mail/test', { to: 'tester@example.gov.il' });
+      const c0 = calls[0] || { body: {} };
+      rec('דוא"ל', 'כשמוגדר BREVO_API_KEY – השליחה עוברת דרך Brevo API (גם כשפורטי SMTP חסומים)', st6.transport === 'brevo' && ok6.status === 200 && ok6.data.transport === 'brevo'
+        && c0.key === 'xkeysib-test' && c0.body.sender.email === 'no-reply@example.gov.il' && c0.body.sender.name === 'מערכת תיאום' && c0.body.to[0].email === 'tester@example.gov.il' && /אימייל בדיקה/.test(c0.body.subject), JSON.stringify(c0.body).slice(0, 160));
+      mode = 'badkey';
+      const bad6 = await a6.req('POST', '/api/admin/mail/test', { to: 'tester@example.gov.il' });
+      rec('דוא"ל', 'מפתח Brevo שגוי – השגיאה מוצגת בבירור באימייל הבדיקה', bad6.status === 502 && /BREVO_API_KEY/.test(bad6.data.error), bad6.data.error);
+      srv.kill(); await new Promise(res => srv.on('exit', res)); brevo.close();
     }
 
     // ---------- מופע 2: HTTPS מחויב ----------
