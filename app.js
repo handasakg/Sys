@@ -1736,7 +1736,7 @@
   async function userDialog(u, roles, infra, done, requests = []) {
     const perms = can('admin.roles') ? (await api('GET', '/api/admin/permissions')).items : [];
     u = u || { perm_grant: [], perm_deny: [], active: true, requests: [] };
-    // שיוך לבקשות: חובה לבחור בקשה אחת לפחות או "ללא שיוך לבקשה"
+    // שיוך לבקשות: רק בעריכת משתמש קיים, ולא חובה (במשתמש חדש האפשרות לא מוצגת)
     const linked = new Set((u.requests || []).map(x => x.id));
     const noneBox = h('input', { type: 'checkbox', id: 'no-req', checked: !!u.id && !linked.size });
     const reqSearch = h('input', { type: 'search', id: 'req-search', placeholder: 'חיפוש לפי מספר או נושא', maxlength: 60 });
@@ -1744,8 +1744,8 @@
       h('input', { type: 'checkbox', name: 'rq', value: r.id, checked: linked.has(r.id), onchange: () => { if (reqList.querySelector('input:checked')) noneBox.checked = false; } }), h('span', { class: 'ltr' }, r.number), ' ', r.title)));
     noneBox.addEventListener('change', () => { if (noneBox.checked) reqList.querySelectorAll('input').forEach(i => { i.checked = false; }); });
     reqSearch.addEventListener('input', () => { const q = reqSearch.value.trim().toLowerCase(); for (const l of reqList.children) l.hidden = !!q && !l.dataset.q.includes(q); });
-    const reqPicker = h('fieldset', { id: 'req-fs' }, h('legend', null, 'שיוך לבקשה ', h('span', { class: 'req-mark', 'aria-hidden': 'true' }, '*'), h('span', { class: 'sr-only' }, '(חובה)')),
-      h('p', { class: 'small muted', style: { margin: '0 0 6px' } }, 'המשתמש יראה את הבקשות שמסמנים כאן. חובה לבחור לפחות אחת, או לסמן "ללא שיוך לבקשה".'),
+    const reqPicker = h('fieldset', { id: 'req-fs' }, h('legend', null, 'שיוך לבקשה (לא חובה)'),
+      h('p', { class: 'small muted', style: { margin: '0 0 6px' } }, 'המשתמש יראה גם את הבקשות שמסמנים כאן.'),
       h('label', { class: 'check' }, noneBox, 'ללא שיוך לבקשה'),
       requests.length ? [h('label', { for: 'req-search', class: 'sr-only' }, 'חיפוש בקשה'), reqSearch, reqList] : h('p', { class: 'small muted' }, 'אין עדיין בקשות במערכת.'));
     const mapCb = h('input', { type: 'checkbox', id: 'map-cb', checked: (u.perm_grant || []).includes('requests.mapping'), onchange: () => { const s0 = form.querySelector('[data-perm="requests.mapping"]'); if (s0) s0.value = mapCb.checked ? 'grant' : ''; } });
@@ -1760,7 +1760,7 @@
         field('תפקיד', sel('role_id', [['', 'בחרו'], ...roles.map(r => [r.id, r.name])], u.role_id, { disabled: u.id && !can('admin.roles') }), { required: true })),
       field('שיוך לגורם תשתית', sel('infra_choice', [['', 'בחרו גורם'], ['none', 'לא משויך לגורם (עובד המינהל / מבקש)'], ...infra.filter(b => b.active || b.id === u.infra_body_id).map(b => [b.id, b.name])],
         u.id ? (u.infra_body_id || 'none') : ''), { required: true, hint: 'משתמש משויך יוכל לתת חוות דעת בשם הגורם.' }),
-      reqPicker,
+      u.id ? reqPicker : null,
       u.id ? null : field('סיסמה ראשונית', inp('password', { type: 'password', minlength: 12, maxlength: 128, autocomplete: 'new-password', dir: 'ltr' }), { required: true, hint: 'לפחות 12 תווים. המשתמש יחליף אותה בכניסה הראשונה.' }),
       u.id ? h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'active', checked: u.active }), 'משתמש פעיל') : null,
       perms.length ? mapBox : null,
@@ -1776,8 +1776,7 @@
       const ic = form.infra_choice.value;
       if (ic === 'none') data.no_infra = true; else data.infra_body_id = Number(ic);
       const rq = [...form.querySelectorAll('input[name=rq]:checked')].map(i => Number(i.value));
-      if (rq.length) data.request_ids = rq; else if (noneBox.checked) data.no_request = true;
-      else { reqPicker.setAttribute('aria-invalid', 'true'); noneBox.focus(); return showErr(err, 'נא לשייך את המשתמש לבקשה, או לסמן "ללא שיוך לבקשה".'); }
+      if (u.id) { if (rq.length) data.request_ids = rq; else data.no_request = true; }
       if (perms.length) { data.perm_grant = []; data.perm_deny = []; for (const s of form.querySelectorAll('[data-perm]')) { if (s.value === 'grant') data.perm_grant.push(s.dataset.perm); if (s.value === 'deny') data.perm_deny.push(s.dataset.perm); } }
       try { await api(u.id ? 'PUT' : 'POST', u.id ? `/api/admin/users/${u.id}` : '/api/admin/users', data); m.close(); toast('המשתמש נשמר'); done(); } catch (ex) { showErr(err, ex.message); }
     });

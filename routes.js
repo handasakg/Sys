@@ -876,7 +876,7 @@ route('GET', '/api/admin/users', (req) => {
     roles: db.prepare('SELECT id, name FROM roles ORDER BY id').all(),
     requests: db.prepare("SELECT id, number, title FROM requests WHERE status != 'closed' ORDER BY id DESC LIMIT 2000").all() };
 });
-// שיוך משתמש לבקשות. בחירה מפורשת חובה: רשימת בקשות, או no_request=true ("ללא שיוך לבקשה")
+// שיוך משתמש לבקשות (לא חובה): רשימת בקשות, או no_request=true להסרת כל השיוכים
 function requestLinks(b, required) {
   if (b.no_request === true) return [];
   const ids = Array.isArray(b.request_ids) ? [...new Set(b.request_ids.slice(0, 200).map(x => v.id(x, { required: true, name: 'בקשה' })))] : null;
@@ -905,7 +905,7 @@ route('POST', '/api/admin/users', async (req) => {
   const role_id = v.id(b.role_id, { required: true, name: 'תפקיד' });
   if (!db.prepare('SELECT 1 FROM roles WHERE id = ?').get(role_id)) throw new sec.ValidationError('תפקיד לא קיים');
   const infraSel = infraChoice(b, true);
-  const reqIds = requestLinks(b, true);
+  const reqIds = requestLinks(b, false); // שיוך לבקשה אינו חלק מיצירת משתמש
   if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new sec.ValidationError('שם המשתמש תפוס');
   const probs = sec.passwordProblems(b.password, username);
   if (probs.length) throw new sec.ValidationError('סיסמה חלשה: ' + probs.join(', '));

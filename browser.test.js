@@ -272,13 +272,12 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await page.fill('dialog[open] input[name=full_name]', 'בדיקה'); await page.fill('dialog[open] input[name=username]', 'ui.test'); await page.fill('dialog[open] input[name=password]', 'Abcdef123456xyz');
     await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(200);
     const err1 = await page.textContent('dialog[open] .form-error');
+    const newDlgText = await page.textContent('dialog[open]');
     await page.selectOption('dialog[open] select[name=role_id]', { index: 1 }); await page.selectOption('dialog[open] select[name=infra_choice]', 'none');
     await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(200);
-    const err2 = await page.textContent('dialog[open] .form-error');
-    await page.check('dialog[open] .req-pick-list input >> nth=0');
-    await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(500);
+    await page.waitForTimeout(300);
     const saved = await page.evaluate(() => !document.querySelector('dialog[open]') && document.querySelector('main').textContent.includes('ui.test'));
-    rec('משתמש חדש', 'בטופס משתמש חדש: תפקיד, גורם תשתית ושיוך לבקשה חובה; עם הבחירות – נשמר', /שדה|נא/.test(err1) && /לשייך/.test(err2) && saved, `${err1} | ${err2}`);
+    rec('משתמש חדש', 'בטופס משתמש חדש: תפקיד וגורם תשתית חובה, ואין "שיוך לבקשה"; עם הבחירות – נשמר', /שדה|נא/.test(err1) && !/שיוך לבקשה/.test(newDlgText) && saved, err1);
     await page.goto(base + '/'); await page.waitForSelector('.sidebar');
 
     // חלון קופץ: פוקוס, Esc, החזרת פוקוס

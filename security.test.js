@@ -388,10 +388,10 @@ class Client {
     // ---------- משתמש חדש: שדות חובה ושיוך לבקשה ----------
     {
       const base0 = { full_name: 'בודק', role_id: roleId('מבקש / יזם'), password: pw() };
-      const e1 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need1', no_request: true });
-      const e2 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need2', no_infra: true });
-      const e3 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need3', role_id: null, no_infra: true, no_request: true });
-      rec('משתמש חדש', 'גורם תשתית, שיוך לבקשה ותפקיד הם שדות חובה', e1.status === 400 && e2.status === 400 && e3.status === 400, [e1.data.error, e2.data.error].join(' | '));
+      const e1 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need1' });
+      const e3 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'need3', role_id: null, no_infra: true });
+      const ok0 = await admin.req('POST', '/api/admin/users', { ...base0, username: 'nolink', password: pw(), no_infra: true });
+      rec('משתמש חדש', 'גורם תשתית ותפקיד הם שדות חובה; שיוך לבקשה אינו חלק מיצירת משתמש', e1.status === 400 && e3.status === 400 && ok0.status === 201 && db.prepare('SELECT COUNT(*) c FROM user_requests WHERE user_id = ?').get(ok0.data.id).c === 0, [e1.data.error, e3.data.error, ok0.status].join(' | '));
       const lp2 = pw();
       const cr = await admin.req('POST', '/api/admin/users', { ...base0, username: 'linked', password: lp2, infra_body_id: infra[3].id, request_ids: [reqId] });
       db.prepare('UPDATE users SET must_change_pw = 0 WHERE id = ?').run(cr.data.id);
