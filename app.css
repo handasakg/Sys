@@ -743,3 +743,5 @@ dialog.viewer-dlg { width: min(1100px, calc(100vw - 24px)); max-width: none; }
 .type-hint { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 10px; }
 .type-hint:empty { display: none; }
 .type-bodies { display: flex; flex-direction: column; gap: 6px; }
+.police-form .contact-fs { border: 1px solid var(--rule); border-radius: 12px; padding: 8px 12px 2px; margin: 4px 0 12px; }
+.police-form .contact-fs legend { font-weight: 700; padding: 0 6px; }

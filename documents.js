@@ -174,7 +174,11 @@ function policePdf(d) {
   L.section('פרטי המבקש/ת');
   L.fields([
     { label: 'שם מבקש/ת', value: p.applicant_name, strong: true }, { label: p.id_kind === 'company' ? 'ח.פ' : 'תעודת זהות', value: p.id_number },
-    { label: 'פלאפון', value: p.phone }, { label: 'איש קשר', value: p.contact },
+    { label: 'פלאפון', value: p.phone },
+  ]);
+  L.section('איש קשר');
+  L.fields([
+    { label: 'שם מלא', value: p.contact_name || p.contact, strong: true }, { label: 'פלאפון', value: p.contact_phone || '—' },
   ]);
   L.section('פרטי העבודה');
   L.fields([

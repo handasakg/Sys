@@ -14,7 +14,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
 
 (async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coord-br-'));
-  const env = { ...process.env, NODE_ENV: 'production', FORCE_HTTPS: '0', DISABLE_BACKUPS: '1', PORT: '4811', DATA_DIR: dataDir, UPLOAD_DIR: path.join(dataDir, 'u'), BACKUP_DIR: path.join(dataDir, 'b'), LOG_DIR: path.join(dataDir, 'l') };
+  const env = { ...process.env, NODE_ENV: 'production', FORCE_HTTPS: '0', DISABLE_BACKUPS: '1', DISABLE_REMINDERS: '1', PORT: '4811', DATA_DIR: dataDir, UPLOAD_DIR: path.join(dataDir, 'u'), BACKUP_DIR: path.join(dataDir, 'b'), LOG_DIR: path.join(dataDir, 'l') };
   const base = 'http://127.0.0.1:4811';
   const adminPw = pw();
   execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', 'create-admin.js'], { cwd: ROOT, env: { ...env, ADMIN_USERNAME: 'chief', ADMIN_FULLNAME: 'דנה לוי', ADMIN_PASSWORD: adminPw } });
@@ -446,11 +446,12 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('הגשת בקשה', 'בלי טופס משטרה – הבקשה לא נשלחת', (await ap.textContent('form.apply-form .form-error')).includes('משטרה'));
       await ap.click('.police-card'); await ap.waitForSelector('dialog[open] form.police-form');
       await ap.screenshot({ path: path.join(SHOTS, 'apply-police.png') });
+      rec('טופס משטרה', 'איש קשר מפוצל: כותרת "איש קשר" ובתוכה שם מלא ופלאפון (חובה)', (await ap.textContent('.police-form .contact-fs legend')) === 'איש קשר' && await ap.$eval('.police-form input[name=contact_phone]', i => i.required) && await ap.$eval('.police-form input[name=contact_name]', i => i.required));
       await ap.fill('.police-form input[name=applicant_name]', 'רונית אברהם');
       await ap.click('.police-form .seg button >> text=ח.פ'); await ap.click('.police-form .seg button >> text=תעודת זהות');
       await ap.fill('.police-form input[name=id_number]', '123456789');
       await ap.fill('.police-form textarea[name=description]', 'חפירה במדרכה לחיבור ביוב'); await ap.fill('.police-form input[name=work_time]', 'א׳-ה׳');
-      await ap.fill('.police-form input[name=work_hours]', '07:00-16:00'); await ap.fill('.police-form input[name=contact]', 'משה הקבלן 052-7654321');
+      await ap.fill('.police-form input[name=work_hours]', '07:00-16:00'); await ap.fill('.police-form input[name=contact_name]', 'משה הקבלן'); await ap.fill('.police-form input[name=contact_phone]', '052-7654321');
       await ap.click('dialog[open] .dlg-foot .btn.primary');
       rec('הגשת בקשה', 'ת.ז לא תקינה נדחית בטופס המשטרה', (await ap.textContent('dialog[open] .form-error')).includes('תעודת הזהות'));
       await ap.fill('.police-form input[name=id_number]', '000000018'); await ap.click('dialog[open] .dlg-foot .btn.primary');
@@ -477,6 +478,9 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('הגשת בקשה', 'טופס המשטרה (PDF) לא גלוי למגיש', !/משטרה/.test(docsTxt) && /tvai\.pdf/.test(docsTxt), docsTxt.slice(0, 120));
       rec('הגשת בקשה', 'אין שגיאות JavaScript בזרימת ההגשה', aErrs.length === 0, aErrs.join(' | '));
       await actx.close();
+      { const ec = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const ep2 = await ec.newPage(); await ep2.goto(base + '/#/apply?kind=entrepreneur'); await ep2.waitForSelector('form.apply-form input[name=address]');
+        const lab = await ep2.evaluate(() => { const f = document.querySelector('form.apply-form input[name=address]').closest('.field'); return { l: f.querySelector('label').textContent.replace(/[*\s]+$/, '').replace(/\s*\*.*$/, ''), hint: (f.querySelector('.hint') || {}).textContent || '' }; });
+        rec('הגשת בקשה', 'ביזם השדה נקרא "כתובת" (לא "כתובת מגורים"), עם הסבר מתחתיו', lab.l.trim() === 'כתובת' && /החברה|המשרד/.test(lab.hint), JSON.stringify(lab)); await ec.close(); }
       // מנהל: רואה את טופס המשטרה כמסמך מוגבל, וממפה גורמים בסדר
       const mctx = await browser.newContext({ viewport: { width: 1280, height: 900 } }); await mockGovmap(mctx); const mp = await mctx.newPage();
       await login(mp); await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('table, .empty');
@@ -551,6 +555,8 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       // צפייה בקובץ בלי להוריד
       await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('[role=tab]'); await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
       const wtRow = await mp.evaluate(() => { const dts = [...document.querySelectorAll('.details-with-map dt')]; const i = dts.findIndex(x => x.textContent === 'זמן עבודה'); return { wt: i >= 0 ? dts[i].nextElementSibling.textContent : null, track: dts.some(x => x.textContent === 'מסלול') }; });
+      const dtNames = await mp.$$eval('.details-with-map dt', x => x.map(e => e.textContent));
+      rec('פרטי הבקשה', 'בבקשה אין יותר כתובת העבודה, גוש/חלקה, מועדי עבודה ויעד לטיפול', !dtNames.some(t => ['כתובת העבודה', 'גוש / חלקה', 'מועדי עבודה', 'יעד לטיפול'].includes(t)), dtNames.join(', '));
       rec('זמן עבודה', 'בעמוד הבקשה מופיע "זמן עבודה" מטופס המשטרה, ואין יותר "מסלול"', wtRow.wt === 'א׳-ה׳' && !wtRow.track && !(await mp.$('.chip.fast')), JSON.stringify(wtRow));
       await mp.click('section[aria-labelledby=docs-h] button[aria-label="צפייה בbakasha.pdf"]'); await mp.waitForSelector('dialog[open] iframe.viewer-frame');
       const vsrc = await mp.getAttribute('dialog[open] iframe.viewer-frame', 'src');

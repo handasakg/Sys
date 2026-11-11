@@ -250,6 +250,11 @@ function start() {
       if (userCount === 0) console.log('אין עדיין משתמשים. צרו מנהל מערכת:  node create-admin.js  (או הגדירו ADMIN_USERNAME / ADMIN_PASSWORD)');
     });
     if (process.env.DISABLE_BACKUPS !== '1') backup.startScheduler();
+    // תזכורות לגורמים שלא טיפלו בבקשה: בדיקה דקה אחרי ההפעלה ואז כל שעה (הזמנים נקבעים בהגדרות)
+    if (process.env.DISABLE_REMINDERS !== '1') {
+      const remind = () => { try { require('./routes').runReminders(); } catch (e) { console.error('[reminders]', e.message); } };
+      setTimeout(remind, 60_000).unref(); setInterval(remind, 3_600_000).unref();
+    }
     // כיבוי מסודר (Render שולח SIGTERM לפני כיבוי): שמירה אחרונה לענן
     let stopping = false;
     for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => {

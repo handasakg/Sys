@@ -148,11 +148,13 @@ for (const [t, c, def] of [['users', 'applicant_kind', 'TEXT'], ['users', 'addre
   ['request_approvals', 'seq', 'INTEGER NOT NULL DEFAULT 0'], ['request_approvals', 'notified_at', 'TEXT'], ['documents', 'visibility', "TEXT NOT NULL DEFAULT 'default'"],
   ['requests', 'fix_auto_approval', 'INTEGER'], ['requests', 'fix_auto_by', 'INTEGER'],
   ['requests', 'loc_x', 'REAL'], ['requests', 'loc_y', 'REAL'], ['requests', 'loc_z', 'REAL'], ['requests', 'loc_label', 'TEXT'],
-  ['requests', 'work_time', 'TEXT'], ['infra_bodies', 'contact_user_id', 'INTEGER'], ['tasks', 'infra_body_id', 'INTEGER']]) {
+  ['requests', 'work_time', 'TEXT'], ['infra_bodies', 'contact_user_id', 'INTEGER'], ['tasks', 'infra_body_id', 'INTEGER'], ['request_approvals', 'reminded_at', 'TEXT'], ['request_approvals', 'reminders', 'INTEGER NOT NULL DEFAULT 0']]) {
   if (!hasCol(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
 }
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('approval.guidelines', ?)").run(require('./documents').DEFAULT_GUIDELINES);
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('public.apply', '1')").run();
+// תזכורות לגורם תשתית שלא טיפל בבקשה: אחרי X ימים, וחוזרות כל Y ימים (0 = פעם אחת בלבד)
+for (const [k, v0] of [['reminder.enabled', '1'], ['reminder.days', '14'], ['reminder.repeat_days', '14']]) db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v0);
 // שם הארגון המלא, ותיאור מסך הכניסה (נערך מהגדרות וקבצים)
 db.prepare("UPDATE settings SET value = 'מינהל הנדסה עיריית קריית גת' WHERE key = 'org.name' AND value = 'מינהל הנדסה'").run();
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('login.text', 'בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה – כל גורמי התשתית במקום אחד, וכל אחד רואה מה ממתין לו.')").run();

@@ -406,6 +406,42 @@ function notifyTurn(requestId, prevBody) {
   history(r.id, null, `התור עבר ל${a.body_name}`, null);
 }
 
+// ---------- תזכורות לגורמים: גורם שתורו הגיע ולא טיפל X ימים מקבל אימייל תזכורת ----------
+const DAY_MS = 86400000;
+function reminderSettings() {
+  return { enabled: getSetting('reminder.enabled') !== '0', days: Math.max(1, parseInt(getSetting('reminder.days'), 10) || 14), repeat: Math.max(0, parseInt(getSetting('reminder.repeat_days'), 10) || 0) };
+}
+function runReminders(now = Date.now()) {
+  const cfg = reminderSettings(); if (!cfg.enabled) return { sent: 0, bodies: [] };
+  const sent = [];
+  for (const r of db.prepare("SELECT * FROM requests WHERE status IN ('review', 'coordination')").all()) {
+    const a = currentTurn(r.id); if (!a || a.decision !== 'pending') continue;
+    // מאז מתי הגורם מחזיק בבקשה: התזכורת האחרונה, או מתי שהגיע תורו (ואם אין – מתי שהבקשה הוגשה)
+    const since = Date.parse((a.reminded_at || a.notified_at || r.submitted_at || r.created_at).replace(' ', 'T') + (/[Z+]/.test(a.reminded_at || a.notified_at || r.submitted_at || r.created_at) ? '' : 'Z'));
+    const wait = (a.reminded_at ? cfg.repeat : cfg.days) * DAY_MS;
+    if (a.reminded_at && !cfg.repeat) continue;
+    if (!Number.isFinite(since) || now - since < wait) continue;
+    const days = Math.floor((now - Date.parse(((a.notified_at || r.submitted_at || r.created_at).replace(' ', 'T')) + (/[Z+]/.test(a.notified_at || r.submitted_at || r.created_at) ? '' : 'Z'))) / DAY_MS);
+    const users = db.prepare(`SELECT DISTINCT u.id, u.full_name, u.email FROM users u LEFT JOIN infra_bodies b ON b.contact_user_id = u.id
+      WHERE u.active = 1 AND (u.infra_body_id = ? OR b.id = ?)`).all(a.infra_body_id, a.infra_body_id);
+    const text = `תזכורת: בקשה ${r.number} ממתינה לחוות דעת ${a.body_name} כבר ${days} ימים. יש לטפל בבקשה.`;
+    for (const u of users) notify(u.id, text, `#/requests/${r.id}`);
+    mailUsers(users, `תזכורת: יש לטפל בבקשה ${r.number} – ${sysTitle()}`,
+      `שלום,\n\n${text}\n\nמספר בקשה: ${r.number}\nנושא: ${r.title}\n\nכניסה לבקשה: ${linkTo(r.id)}\n\n${sysTitle()}`);
+    db.prepare('UPDATE request_approvals SET reminded_at = ?, reminders = reminders + 1 WHERE id = ?').run(new Date(now).toISOString(), a.id);
+    history(r.id, null, `נשלחה תזכורת ל${a.body_name}`, `${days} ימים בלי טיפול`);
+    sent.push({ request: r.number, body: a.body_name, users: users.length });
+  }
+  if (sent.length) console.log(`[reminders] נשלחו ${sent.length} תזכורות`);
+  return { sent: sent.length, items: sent };
+}
+route('POST', '/api/admin/reminders/run', (req) => {
+  requirePerm(req, 'admin.settings');
+  const out = runReminders();
+  audit(req, 'reminders_run', { sent: out.sent });
+  return out;
+});
+
 // ---------- אישור סופי: הפקת מסמך האישור, צירוף לבקשה ושליחה למגיש ----------
 function logoBuffer() {
   const name = getSetting('org.logo'); const path_ = require('node:path');
@@ -1033,7 +1069,7 @@ route('GET', '/api/admin/settings', (req) => {
     sla_regular_days: +getSetting('sla.regular_days'),
     org_name: getSetting('org.name'), system_title: getSetting('org.system_title'),
     req_prefix: getSetting('requests.prefix'), req_with_year: getSetting('requests.with_year') === '1', req_pad: +getSetting('requests.pad'),
-    govmap_token: getSetting('govmap.token') || '', govmap_env: !!config.govmapToken, guidelines: getSetting('approval.guidelines') || '', login_heading: getSetting('login.heading') || '', login_text: getSetting('login.text') || '', public_apply: getSetting('public.apply') !== '0',
+    reminder_enabled: reminderSettings().enabled, reminder_days: reminderSettings().days, reminder_repeat_days: reminderSettings().repeat, govmap_token: getSetting('govmap.token') || '', govmap_env: !!config.govmapToken, guidelines: getSetting('approval.guidelines') || '', login_heading: getSetting('login.heading') || '', login_text: getSetting('login.text') || '', public_apply: getSetting('public.apply') !== '0',
     req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'), docs_visibility: docsOwnOnly() ? 'own' : 'request',
   };
 });
@@ -1055,6 +1091,9 @@ route('PUT', '/api/admin/settings', (req) => {
   if (b.system_title !== undefined) setSetting('org.system_title', v.str(b.system_title, { max: 100, required: true, name: 'שם המערכת' }));
   if (b.login_heading !== undefined) setSetting('login.heading', v.str(b.login_heading, { max: 120, name: 'כותרת מסך הכניסה' }) || '');
   if (b.login_text !== undefined) setSetting('login.text', v.str(b.login_text, { max: 600, name: 'תיאור במסך הכניסה' }) || '');
+  if (b.reminder_enabled !== undefined) setSetting('reminder.enabled', b.reminder_enabled ? '1' : '0');
+  if (b.reminder_days !== undefined) setSetting('reminder.days', String(Math.round(v.num(b.reminder_days, { min: 1, max: 365, required: true, name: 'ימים עד תזכורת' }))));
+  if (b.reminder_repeat_days !== undefined) setSetting('reminder.repeat_days', String(Math.round(v.num(b.reminder_repeat_days, { min: 0, max: 365, required: true, name: 'תזכורת חוזרת כל' }))));
   if (b.govmap_token !== undefined) setSetting('govmap.token', v.str(b.govmap_token, { max: 400, name: 'מפתח GovMap', pattern: /^[A-Za-z0-9._\-=+/]*$/ }) || '');
   if (b.guidelines !== undefined) setSetting('approval.guidelines', v.str(b.guidelines, { max: 8000, name: 'הנחיות' }) || '');
   if (b.public_apply !== undefined) setSetting('public.apply', b.public_apply ? '1' : '0');
@@ -1222,7 +1261,7 @@ function policeFields(raw) {
   const idNum = v.str(String(p.id_number ?? '').replace(/\D/g, ''), { required: true, max: 9, name: idKind === 'id' ? 'טופס משטרה – תעודת זהות' : 'טופס משטרה – ח.פ' });
   if (idKind === 'id' && !validIsraeliId(idNum)) throw new sec.ValidationError('טופס משטרה – תעודת זהות לא תקינה (ספרת ביקורת שגויה)');
   if (idKind === 'company' && !/^\d{9}$/.test(idNum)) throw new sec.ValidationError('טופס משטרה – ח.פ חייב להיות 9 ספרות');
-  return {
+  const out = {
     applicant_name: v.str(p.applicant_name, { required: true, max: 100, name: 'טופס משטרה – שם מבקש/ת' }),
     project: v.str(p.project, { required: true, max: 200, name: 'טופס משטרה – פרויקט' }),
     id_kind: idKind, id_number: idNum.padStart(idKind === 'id' ? 9 : 9, '0'),
@@ -1230,10 +1269,14 @@ function policeFields(raw) {
     description: v.str(p.description, { required: true, max: 2000, name: 'טופס משטרה – תיאור' }),
     work_time: v.str(p.work_time, { required: true, max: 200, name: 'טופס משטרה – זמן עבודה' }),
     work_hours: v.str(p.work_hours, { required: true, max: 100, name: 'טופס משטרה – שעות עבודה' }),
-    contact: v.str(p.contact, { required: true, max: 200, name: 'טופס משטרה – איש קשר' }),
+    // איש קשר: שם מלא ופלאפון (שדות נפרדים). contact נשמר גם כשורה אחת, לתצוגה ולתאימות לאחור
+    contact_name: v.str(p.contact_name, { required: true, max: 100, name: 'טופס משטרה – איש קשר, שם מלא' }),
+    contact_phone: phoneField(p.contact_phone, 'טופס משטרה – איש קשר, פלאפון'),
     notes: v.str(p.notes, { max: 2000, name: 'טופס משטרה – הערות' }),
     date: v.date(p.date, { required: true, name: 'טופס משטרה – תאריך' }),
   };
+  out.contact = `${out.contact_name} ${out.contact_phone}`;
+  return out;
 }
 // תפקיד למשתמש שנרשם: לפי סוג הבקשה וסוג המגיש, או תפקיד ברירת המחדל "תושב/ת" / "יזם"
 function publicRole(type, kind) {
@@ -1401,4 +1444,4 @@ route('DELETE', '/api/admin/request-types/:id', (req) => {
   return { ok: true };
 });
 
-module.exports = { match };
+module.exports = { match, runReminders };

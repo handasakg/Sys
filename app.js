@@ -472,7 +472,9 @@
           field('אימייל', inp('email', { type: 'email', maxlength: 200, autocomplete: 'email', dir: 'ltr' }), { required: true, hint: 'לכאן יישלחו עדכונים ומסמך האישור.' }),
           field('פלאפון', inp('phone', { type: 'tel', maxlength: 20, autocomplete: 'tel', dir: 'ltr', inputmode: 'tel' }), { required: true })),
         h('div', { class: 'row' },
-          field('כתובת מגורים', inp('address', { maxlength: 300, autocomplete: 'street-address' }), { required: true }),
+          kind === 'entrepreneur'
+            ? field('כתובת', inp('address', { maxlength: 300, autocomplete: 'street-address' }), { required: true, hint: 'כתובת החברה או המשרד.' })
+            : field('כתובת מגורים', inp('address', { maxlength: 300, autocomplete: 'street-address' }), { required: true }),
           field('פרויקט', inp('project', { maxlength: 200 }), { required: true, hint: 'שם הפרויקט או תיאור קצר של העבודה.' })),
         h('div', { class: 'field' }, h('span', { class: 'lbl', id: 'loc-lbl' }, 'מיקום', h('span', { class: 'req-mark', 'aria-hidden': 'true' }, ' *'), h('span', { class: 'sr-only' }, ' (חובה)')), locBtn)),
       h('fieldset', null, h('legend', null, 'מסמכים'),
@@ -499,8 +501,10 @@
         field('תיאור', area('description', { value: p.description || '', maxlength: 2000, rows: 3 }), { required: true }),
         h('div', { class: 'row' }, field('זמן עבודה', inp('work_time', { value: p.work_time || '', maxlength: 200, placeholder: 'למשל: ימים א׳-ה׳' }), { required: true }),
           field('שעות עבודה', inp('work_hours', { value: p.work_hours || '', maxlength: 100, placeholder: 'למשל: 07:00-19:00', dir: 'ltr' }), { required: true })),
-        h('div', { class: 'row' }, field('איש קשר', inp('contact', { value: p.contact || '', maxlength: 200, placeholder: 'שם וטלפון' }), { required: true }),
-          field('תאריך', inp('date', { type: 'date', value: p.date || today() }), { required: true })),
+        field('תאריך', inp('date', { type: 'date', value: p.date || today() }), { required: true }),
+        h('fieldset', { class: 'contact-fs' }, h('legend', null, 'איש קשר'),
+          h('div', { class: 'row' }, field('שם מלא', inp('contact_name', { value: p.contact_name || '', maxlength: 100, autocomplete: 'off' }), { required: true }),
+            field('פלאפון', inp('contact_phone', { type: 'tel', value: p.contact_phone || '', maxlength: 20, dir: 'ltr', inputmode: 'tel', autocomplete: 'off' }), { required: true }))),
         field('הערות', area('notes', { value: p.notes || '', maxlength: 2000, rows: 2 })));
       const m = modal('משטרה – פרטי העבודה', f2, [h('button', { class: 'btn primary', type: 'button', onclick: () => f2.requestSubmit() }, 'שמירת הטופס'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
       m.dlg.classList.add('police-dlg');
@@ -510,6 +514,7 @@
         if (p.id_kind === 'id' && !validId(idn)) { f2.id_number.setAttribute('aria-invalid', 'true'); f2.id_number.focus(); return showErr(pErr, 'מספר תעודת הזהות אינו תקין. בדקו את כל 9 הספרות.'); }
         if (p.id_kind === 'company' && !/^\d{9}$/.test(idn)) { f2.id_number.setAttribute('aria-invalid', 'true'); f2.id_number.focus(); return showErr(pErr, 'ח.פ חייב להיות 9 ספרות.'); }
         if (!phoneOk(f2.phone.value)) { f2.phone.setAttribute('aria-invalid', 'true'); f2.phone.focus(); return showErr(pErr, 'מספר הפלאפון אינו תקין.'); }
+        if (!phoneOk(f2.contact_phone.value)) { f2.contact_phone.setAttribute('aria-invalid', 'true'); f2.contact_phone.focus(); return showErr(pErr, 'מספר הפלאפון של איש הקשר אינו תקין.'); }
         police = { ...formData(f2), id_kind: p.id_kind, id_number: idn };
         polStatus.textContent = 'מולא'; err.hidden = true; polBtn.classList.add('done'); polBtn.classList.remove('bad'); m.close(); polBtn.focus();
       });
@@ -1201,13 +1206,6 @@
         field('פרויקט', inp('project_name', { value: r.project_name || '', maxlength: 200 }))),
       field('נושא הבקשה', inp('title', { value: r.title || '', maxlength: 200 }), { required: true }),
       field('תיאור העבודה', area('description', { value: r.description || '', maxlength: 5000 }), { hint: 'מה מתוכנן, היקף העבודה, תשתיות מושפעות.' }),
-      h('div', { class: 'row' },
-        field('כתובת / מיקום', inp('address', { value: r.address || '', maxlength: 300 })),
-        field('גוש', inp('gush', { value: r.gush || '', maxlength: 20, inputmode: 'numeric', pattern: '[0-9\\s\\-]*' })),
-        field('חלקה', inp('helka', { value: r.helka || '', maxlength: 20, inputmode: 'numeric', pattern: '[0-9\\s\\-]*' }))),
-      h('div', { class: 'row' },
-        field('תחילת עבודה מתוכננת', inp('planned_start', { type: 'date', value: r.planned_start || '' })),
-        field('סיום עבודה מתוכנן', inp('planned_end', { type: 'date', value: r.planned_end || '' }))),
       field('זמן עבודה', inp('work_time', { value: r.work_time || '', maxlength: 200, placeholder: 'למשל: ימים א׳-ה׳' }), { hint: 'מגיע אוטומטית מטופס המשטרה בהגשת הבקשה.' }),
       h('div', { class: 'actions', style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap' } },
         h('button', { class: 'btn primary', type: 'submit', value: 'save' }, 'שמירת שינויים'),
@@ -1264,15 +1262,11 @@
       h('dt', null, 'סוג'), h('dd', null, r.type_name || T(r.type)),
       h('dt', null, 'מגיש'), h('dd', null, r.applicant_name, d.applicant && d.applicant.kind ? h('span', { class: 'chip plain', style: { 'margin-inline-start': '8px' } }, d.applicant.kind === 'entrepreneur' ? 'יזם' : 'תושב/ת') : null),
       d.applicant && (d.applicant.phone || d.applicant.email) ? [h('dt', null, 'פרטי קשר'), h('dd', null, d.applicant.phone ? h('a', { href: 'tel:' + d.applicant.phone, class: 'ltr' }, d.applicant.phone) : null, d.applicant.phone && d.applicant.email ? ' · ' : '', d.applicant.email ? h('a', { href: 'mailto:' + d.applicant.email, class: 'ltr' }, d.applicant.email) : null)] : null,
-      d.applicant && d.applicant.address ? [h('dt', null, 'כתובת מגורים'), h('dd', null, d.applicant.address)] : null,
+      d.applicant && d.applicant.address ? [h('dt', null, d.applicant.kind === 'entrepreneur' ? 'כתובת' : 'כתובת מגורים'), h('dd', null, d.applicant.address)] : null,
       h('dt', null, 'גורם מטפל'), h('dd', null, r.assignee_name || 'טרם הוקצה', d.can.assign ? [' ', h('button', { class: 'btn sm', type: 'button', onclick: () => assignDialog(r, reload) }, r.assignee_name ? 'שינוי' : 'הקצאה')] : null),
       h('dt', null, 'פרויקט'), h('dd', null, r.project_name || '—'),
       h('dt', null, 'משתמשים משויכים'), h('dd', null, d.members.length ? d.members.map(m => m.full_name).join(', ') : '—'),
-      h('dt', null, 'כתובת העבודה'), h('dd', null, r.address || '—'),
-      h('dt', null, 'גוש / חלקה'), h('dd', null, h('span', { class: 'num' }, [r.gush, r.helka].filter(Boolean).join(' / ') || '—')),
-      h('dt', null, 'מועדי עבודה'), h('dd', null, r.planned_start ? `${fmtDate(r.planned_start)} – ${fmtDate(r.planned_end)}` : '—'),
       h('dt', null, 'הוגשה'), h('dd', null, fmtDateTime(r.submitted_at)),
-      h('dt', null, 'יעד לטיפול'), h('dd', null, r.due_at ? h('span', { class: r.overdue ? 'sev-critical' : '' }, fmtDate(r.due_at), r.overdue ? ' (בחריגה)' : '') : '—'),
       h('dt', null, 'זמן עבודה'), h('dd', null, r.work_time || '—'));
 
     // גורמי תשתית
@@ -1973,6 +1967,24 @@
       e.preventDefault(); if (!validate(loginForm, lgErr)) return;
       try { await api('PUT', '/api/admin/settings', { login_heading: loginForm.login_heading.value, login_text: loginForm.login_text.value }); await refreshMe(); toast('מסך הכניסה עודכן'); } catch (ex) { showErr(lgErr, ex.message); }
     });
+    // תזכורות לגורמי תשתית
+    const rmErr = errBox();
+    const rmForm = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'תזכורות לגורמי תשתית'), rmErr,
+      h('p', { class: 'muted' }, 'גורם שהגיע תורו ולא טיפל בבקשה מקבל אימייל והתראה עם מספר הבקשה וקישור אליה.'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'reminder_enabled', checked: s.reminder_enabled }), 'שליחת תזכורות פעילה'),
+      h('div', { class: 'row' },
+        field('תזכורת ראשונה אחרי (ימים)', inp('reminder_days', { type: 'number', min: 1, max: 365, value: s.reminder_days }), { required: true, hint: 'מהרגע שהגיע תורו של הגורם.' }),
+        field('תזכורת חוזרת כל (ימים)', inp('reminder_repeat_days', { type: 'number', min: 0, max: 365, value: s.reminder_repeat_days }), { required: true, hint: '0 = תזכורת אחת בלבד.' })),
+      h('div', { class: 'actions', style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap' } },
+        h('button', { class: 'btn primary', type: 'submit' }, 'שמירה'),
+        h('button', { class: 'btn', type: 'button', onclick: async (e) => {
+          try { const r = await submitting(e.currentTarget, () => api('POST', '/api/admin/reminders/run')); toast(r.sent ? `נשלחו ${r.sent} תזכורות` : 'אין כרגע גורמים שצריך להזכיר להם'); } catch (ex) { showErr(rmErr, ex.message); }
+        } }, 'בדיקה ושליחה עכשיו')),
+      h('p', { class: 'small muted' }, 'המערכת בודקת כל שעה. בשרת חינמי שנכנס למצב שינה, הבדיקה מתבצעת כשהשרת מתעורר.'));
+    rmForm.addEventListener('submit', async (e) => {
+      e.preventDefault(); if (!validate(rmForm, rmErr)) return;
+      try { await api('PUT', '/api/admin/settings', { reminder_enabled: rmForm.reminder_enabled.checked, reminder_days: Number(rmForm.reminder_days.value), reminder_repeat_days: Number(rmForm.reminder_repeat_days.value) }); toast('הגדרות התזכורות נשמרו'); } catch (ex) { showErr(rmErr, ex.message); }
+    });
     // מפת GovMap
     const gmErr = errBox();
     const gmForm = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'מפת GovMap'), gmErr,
@@ -2033,7 +2045,7 @@
           if (!(await confirmDlg('חזרה ללוגו ברירת המחדל', 'להסיר את הלוגו שהועלה ולחזור ללוגו ברירת המחדל?', 'חזרה לברירת המחדל', true))) return;
           try { await api('DELETE', '/api/admin/logo'); await refreshMe(); toast('חזרנו ללוגו ברירת המחדל'); renderShell(); route(); } catch (ex) { toast(ex.message, true); }
         } }, 'חזרה ללוגו ברירת המחדל') : null), lStatus);
-    main.replaceChildren(pageHead('הגדרות וקבצים', 'גורמי התשתית עברו למסך "תפקידים והרשאות", בלשונית משלהם.'), h('div', { class: 'grid two' }, h('div', null, logoPanel, files), h('div', null, general, loginForm, gmForm, numbering, guide)));
+    main.replaceChildren(pageHead('הגדרות וקבצים', 'גורמי התשתית עברו למסך "תפקידים והרשאות", בלשונית משלהם.'), h('div', { class: 'grid two' }, h('div', null, logoPanel, files), h('div', null, general, rmForm, loginForm, gmForm, numbering, guide)));
   }
   async function refreshMe() {
     const me = await api('GET', '/api/auth/me');

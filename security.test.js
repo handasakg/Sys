@@ -34,7 +34,7 @@ function seedReq(db, applicantId, f = {}) {
     applicantId, f.status || 'submitted', f.track || 'regular', f.track_status || 'none');
   return { id: Number(info.lastInsertRowid), number };
 }
-const TEST_POLICE = { applicant_name: 'בודק מערכת', project: 'פרויקט בדיקה', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'עבודת בדיקה', work_time: 'א׳-ה׳', work_hours: '07:00-16:00', contact: 'בודק 052-7654321', notes: '', date: '2026-12-01' };
+const TEST_POLICE = { applicant_name: 'בודק מערכת', project: 'פרויקט בדיקה', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'עבודת בדיקה', work_time: 'א׳-ה׳', work_hours: '07:00-16:00', contact_name: 'בודק שטח', contact_phone: '052-7654321', notes: '', date: '2026-12-01' };
 let applySeq = 0;
 async function applyPublic(baseUrl, over = {}) {
   const meta = await new Client(baseUrl).req('GET', '/api/public/apply-meta');
@@ -50,7 +50,7 @@ async function applyPublic(baseUrl, over = {}) {
 
 function startServer(env, port) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'start.js'], { cwd: ROOT, env: { ...process.env, PORT: String(port), DISABLE_BACKUPS: '1', ...env } });
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'start.js'], { cwd: ROOT, env: { ...process.env, PORT: String(port), DISABLE_BACKUPS: '1', DISABLE_REMINDERS: '1', ...env } });
     let out = '';
     child.stdout.on('data', d => { out += d; if (out.includes('פועלת')) resolve(child); });
     child.stderr.on('data', d => { out += d; });
@@ -698,7 +698,7 @@ class Client {
       const tKey = meta.data.types.find(t => t.name === 'עבודות בדרכים').key;
       rec('סוגי בקשות', 'סוג בקשה שהוגדר בלוח הבקרה מופיע בטופס הציבורי עם התיאור', ty.status === 201 && !!tKey && meta.data.types.find(t => t.key === tKey).description.includes('חפירה'));
       const pdfBuf = Buffer.from('%PDF-1.4\n% route plan\n%%EOF'); const dwf = Buffer.concat([Buffer.from('(DWF V06.00)'), Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(40, 1)]);
-      const police = { applicant_name: 'ישראל ישראלי', project: 'שדרוג קווי ביוב', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'חפירה ברחוב הגפן', work_time: 'ימים א׳-ה׳', work_hours: '07:00-19:00', contact: 'דני 052-7654321', notes: '', date: '2026-12-01' };
+      const police = { applicant_name: 'ישראל ישראלי', project: 'שדרוג קווי ביוב', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'חפירה ברחוב הגפן', work_time: 'ימים א׳-ה׳', work_hours: '07:00-19:00', contact_name: 'דני לוי', contact_phone: '052-7654321', notes: '', date: '2026-12-01' };
       const apply = (ip, over = {}, files = {}) => {
         const fd = new FormData();
         const base = { kind: 'entrepreneur', username: 'ישראל ישראלי', password: APPLY_PW, type: tKey, email: 'israel@example.com', address: 'הגפן 3, קריית גת', phone: '0501234567', project: 'שדרוג קווי ביוב', police: JSON.stringify(police), location: JSON.stringify({ x: 177750.5, y: 613190.25, z: 9, label: 'רחוב הגפן 3' }), ...over };
@@ -711,11 +711,12 @@ class Client {
       for (const [desc, over, files] of [['שדה מלכודת', { website: 'spam' }], ['בלי טופס משטרה', { police: undefined }], ['ת.ז שגויה', { police: JSON.stringify({ ...police, id_number: '123456789' }) }],
         ['טלפון שגוי', { phone: '12345' }], ['אימייל שגוי', { email: 'not-mail' }], ['סוג בקשה לא קיים', { type: 'nope' }], ['בלי תוכנית תוואי', {}, { route_plan: null }],
         ['תוכנית DWG (רק PDF/DWF)', {}, { route_plan: ['plan.dwg', Buffer.from('AC1032 dwg')] }], ['HTML שמתחזה ל-PDF', {}, { work_request: ['x.pdf', Buffer.from('<html><script>alert(1)</script>')] }],
+        ['איש קשר בלי פלאפון', { police: JSON.stringify({ ...police, contact_phone: '' }) }], ['איש קשר בלי שם', { police: JSON.stringify({ ...police, contact_name: '' }) }],
         ['שם משתמש עם תו כיווניות', { username: 'ישראל‮abc' }], ['סיסמה חלשה', { password: '1234' }],
         ['בלי מיקום', { location: undefined }], ['מיקום מחוץ לישראל', { location: JSON.stringify({ x: 5, y: 5 }) }], ['מיקום לא מספרי', { location: '{"x":"abc","y":"1"}' }]]) {
         const x = await apply(`10.50.0.${neg.length + 1}`, over, files); if (x.status < 400) neg.push(`${desc}:${x.status}`);
       }
-      rec('הגשה מהציבור', '14 הגשות לא תקינות נדחות בשרת (מלכודת, משטרה, ת.ז, טלפון, אימייל, סוג, קבצים, שם, סיסמה, מיקום)', neg.length === 0, neg.join(', '));
+      rec('הגשה מהציבור', '16 הגשות לא תקינות נדחות בשרת (מלכודת, משטרה, ת.ז, טלפון, איש קשר, אימייל, סוג, קבצים, שם, סיסמה, מיקום)', neg.length === 0, neg.join(', '));
       const ok = await apply('10.60.0.1');
       rec('הגשה מהציבור', 'יזם מגיש בקשה עם שם משתמש בעברית ומקבל מספר בקשה', ok.status === 201 && /^TH-\d{4}-\d{4}$/.test(ok.data.number), `${ok.status} ${ok.data.number || ok.data.error}`);
       const dup = await apply('10.60.0.2');
@@ -774,6 +775,37 @@ class Client {
         const mh = await fetch(b5 + '/map.html'); const csp = mh.headers.get('content-security-policy') || ''; const mainCsp = (await fetch(b5 + '/')).headers.get('content-security-policy') || '';
         rec('מיקום', 'עמוד המפה מורשה לטעון רק את GovMap ורק בתוך האתר עצמו; שאר האתר נשאר חסום', mh.status === 200 && /script-src 'self' https:\/\/www\.govmap\.gov\.il/.test(csp) && /frame-ancestors 'self'/.test(csp) && mh.headers.get('x-frame-options') === 'SAMEORIGIN'
           && !/govmap/.test(mainCsp) && /frame-ancestors 'none'/.test(mainCsp), csp.slice(0, 90));
+      }
+      // איש קשר בטופס המשטרה: שם מלא ופלאפון בנפרד
+      {
+        const pd = JSON.parse(db5.prepare('SELECT data FROM request_police WHERE request_id = ?').get(reqId5).data);
+        rec('טופס משטרה', 'איש הקשר נשמר כשם מלא ופלאפון (שדה חובה) בנפרד', pd.contact_name === 'דני לוי' && pd.contact_phone === '0527654321', JSON.stringify([pd.contact_name, pd.contact_phone]));
+      }
+      // תזכורות: גורם שתורו הגיע ולא טיפל X ימים מקבל אימייל עם מספר הבקשה וקישור
+      {
+        const applIdR = db5.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(reqId5).applicant_id;
+        const rr = seedReq(db5, applIdR, { status: 'review', title: 'בקשה שלא טופלה' });
+        const old = new Date(Date.now() - 15 * 86400000).toISOString();
+        db5.prepare("INSERT INTO request_approvals (request_id, infra_body_id, seq, decision, notified_at) VALUES (?, ?, 1, 'pending', ?)").run(rr.id, infra5[0].id, old);
+        const rr2 = seedReq(db5, applIdR, { status: 'review', title: 'בקשה טרייה' });
+        db5.prepare("INSERT INTO request_approvals (request_id, infra_body_id, seq, decision, notified_at) VALUES (?, ?, 1, 'pending', ?)").run(rr2.id, infra5[0].id, new Date(Date.now() - 3 * 86400000).toISOString());
+        const notAdmin = await b1.c.req('POST', '/api/admin/reminders/run');
+        mails.length = 0;
+        const run1 = await ad.req('POST', '/api/admin/reminders/run');
+        await new Promise(res => setTimeout(res, 600));
+        const rm = mails.find(m => m.to === 'b1@example.gov.il');
+        const rmText = rm ? rm.body + Buffer.from((rm.body.split(/\n\n/).slice(1).join('\n\n').match(/[A-Za-z0-9+/=\n]{40,}/) || [''])[0].replace(/\s+/g, ''), 'base64').toString('utf8') : '';
+        rec('תזכורות', 'גורם שלא טיפל בבקשה 14 ימים מקבל אימייל תזכורת עם מספר הבקשה וקישור אליה', notAdmin.status === 403 && run1.status === 200 && run1.data.items.some(x => x.request === rr.number) && !run1.data.items.some(x => x.request === rr2.number)
+          && rmText.includes(rr.number) && new RegExp(`/#/requests/${rr.id}`).test(rmText), JSON.stringify(run1.data.items));
+        const run2 = await ad.req('POST', '/api/admin/reminders/run');
+        rec('תזכורות', 'אחרי תזכורת לא נשלחת עוד אחת עד שעובר זמן החזרה שהוגדר', !run2.data.items.some(x => x.request === rr.number));
+        const bad = await ad.req('PUT', '/api/admin/settings', { reminder_days: 0 });
+        await ad.req('PUT', '/api/admin/settings', { reminder_days: 30, reminder_repeat_days: 0 });
+        db5.prepare('UPDATE request_approvals SET reminded_at = NULL WHERE request_id = ?').run(rr.id);
+        const run3 = await ad.req('POST', '/api/admin/reminders/run');
+        const st = (await ad.req('GET', '/api/admin/settings')).data;
+        rec('תזכורות', 'הזמנים נקבעים מלוח הבקרה (30 ימים – עדיין לא נשלחת), עם אימות ערכים', bad.status === 400 && !run3.data.items.some(x => x.request === rr.number) && st.reminder_days === 30 && st.reminder_repeat_days === 0, JSON.stringify([bad.status, st.reminder_days]));
+        await ad.req('PUT', '/api/admin/settings', { reminder_days: 14, reminder_repeat_days: 14 });
       }
       // זמן העבודה מטופס המשטרה עובר לבקשה
       rec('זמן עבודה', 'זמן העבודה מטופס המשטרה מופיע גם בבקשה עצמה, לכל מי שמטפל בה', av.data.request.work_time === police.work_time && mv.data.request.work_time === police.work_time, av.data.request.work_time);
