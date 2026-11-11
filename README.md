@@ -11,8 +11,8 @@
 ## הפעלה
 ```bash
 cp .env.example .env          # מלאו PUBLIC_URL ושאר הערכים
-node create-admin.js   # יצירת מנהל ראשון (אין משתמש ברירת מחדל)
-npm start                      # NODE_ENV=production
+node create-admin.js   # יצירת מנהל ראשון (או ADMIN_USERNAME/ADMIN_PASSWORD ב-.env)
+npm start                      # מפעיל את start.js: שחזור מהענן ← שרת
 ```
 בפרודקשן השרת מצפה ל-HTTPS: הציבו אותו מאחורי Nginx/Load Balancer עם תעודת TLS, והגדירו `TRUST_PROXY=1`.
 
@@ -37,12 +37,23 @@ npm start                      # NODE_ENV=production
 npm run build   # יוצר app.min.js / app.min.css. אם הם ישנים מהמקור, השרת מגיש את המקור.
 ```
 
+## שמירת הנתונים בענן (Render בחינם ודומיו)
+באחסון שהדיסק שלו נמחק בכל הפעלה מחדש, מגדירים סנכרון ל-Supabase Storage (חינם עד 1GB):
+1. ב-supabase.com: פרויקט חדש ← Storage ← New bucket בשם `handasa`, **פרטי** (לא Public).
+2. Project Settings ← API Keys: מעתיקים את ה-Project URL ואת מפתח ה-secret (או service_role).
+3. ב-Render ← Environment: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_BUCKET=handasa`. ‏Start Command: `npm start`.
+המערכת משחזרת את המסד בכל הפעלה, שומרת אותו לענן כמה שניות אחרי כל שינוי (ועותק יומי ב-`db/daily/`), והקבצים עולים לענן מיד. אם הענן לא זמין בהפעלה – השרת לא דורס את העותק השמור.
+המפתח נשאר בשרת בלבד ולא נשלח לדפדפן.
+
+## אפליקציה
+המערכת ניתנת להתקנה (PWA): Android ומחשב (Chrome/Edge) – כפתור התקנה קטן בפס העליון ובמסך הכניסה; iPhone/iPad ו-Safari במק – הכפתור מציג הוראות. אחרי ההתקנה הכפתור לא מוצג.
+
 ## גיבוי
 גיבוי אוטומטי של המסד והקבצים כל `BACKUP_INTERVAL_MINUTES` (ברירת מחדל 60), שמירה 30 יום. כדי שהגיבוי יהיה מחוץ לשרת, הפנו את `BACKUP_DIR` לדיסק ענן מעוגן (S3/Azure Blob דרך mount, תיקייה מסונכרנת וכו').
 
 ## בדיקות
 ```bash
-npm run test:security   # 129 בדיקות אבטחה מול שרת רץ
+npm run test:security   # 134 בדיקות אבטחה מול שרת רץ
 node browser.test.js   # בדיקות דפדפן (דורש Playwright + Chrome)
 npm run scan:secrets    # סריקת סודות בקבצים ובהיסטוריית git
 ```
@@ -50,13 +61,16 @@ npm run scan:secrets    # סריקת סודות בקבצים ובהיסטורי�
 ## מבנה
 כל הקבצים יושבים בתיקייה אחת, בלי תתי-תיקיות. מעלים את כולם כמו שהם לאותה תיקייה בשרת.
 
-- `server.js` – נקודת ההפעלה: HTTPS, CORS, CSRF, rate limit, כותרות אבטחה
+- `start.js` – נקודת ההפעלה (שחזור מהענן, ואז השרת)
+- `cloudsync.js` – סנכרון לענן
+- `sw.js`, `manifest.webmanifest`, `icon-*.png`, `logo.png` – אפליקציה, אייקונים ולוגו ברירת מחדל
+- `server.js` – השרת: HTTPS, CORS, CSRF, rate limit, כותרות אבטחה
 - `routes.js` – כל ה-API ובדיקות ההרשאה
 - `permissions.js` – קטלוג 26 ההרשאות ותפקידי ברירת המחדל
 - `uploads.js`, `auth.js`, `security.js`, `db.js`, `backup.js`, `mailer.js`, `config.js`, `workflow.js` – מודולי השרת
 - `index.html`, `app.js`, `app.css` (+ `.min`), `privacy.html`, `accessibility.html`, `404.html` – ממשק המשתמש
 - `create-admin.js`, `build.js`, `scan-secrets.js` – כלי ניהול; `security.test.js`, `browser.test.js` – בדיקות
 
-השרת מגיש לדפדפן **רק** את 13 הקבצים הציבוריים שברשימה ב-`server.js`. קוד השרת, `.env`, מסד הנתונים והבדיקות לא נגישים מהרשת, למרות שהם באותה תיקייה.
+השרת מגיש לדפדפן **רק** את הקבצים הציבוריים שברשימה ב-`server.js`. קוד השרת, `.env`, מסד הנתונים והבדיקות לא נגישים מהרשת, למרות שהם באותה תיקייה.
 
 תיקיית `data` (מסד נתונים, קבצים מצורפים, גיבויים ולוגים) **נוצרת אוטומטית** בהפעלה הראשונה – אין צורך להעלות אותה.

@@ -518,3 +518,15 @@ a.brand:hover { background: var(--surface-2); }
 }
 .btn.menu-btn { display: none; }
 @media (max-width: 820px) { .btn.menu-btn { display: inline-flex; } }
+
+/* ===== לוגו ברירת מחדל ולוח בהיר במצב כהה ===== */
+.doc-page header img { width: auto; height: 56px; }
+:root[data-mode="dark"] .brand-mark.custom, :root[data-mode="dark"] .auth-logo, :root[data-mode="dark"] .logo-preview { background: #fff; padding: 8px 12px; border-radius: 14px; box-sizing: content-box; }
+:root[data-mode="dark"] .brand-mark.custom { max-width: calc(100% - 24px); }
+/* ===== התקנה כאפליקציה ===== */
+.install-btn[hidden] { display: none !important; }
+.auth-form .links .install-btn { min-height: 44px; padding: 4px 10px; font-weight: 600; color: var(--accent); }
+.inst-steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.inst-steps li { display: grid; grid-template-columns: 30px 1fr; gap: 10px; align-items: start; }
+.inst-n { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; }
+.inst-ic { display: inline-flex; vertical-align: middle; } .inst-ic svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; }

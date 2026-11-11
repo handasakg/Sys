@@ -1,0 +1,12 @@
+# סודות ומשתני סביבה
+.env
+.env.*
+!.env.example
+# נתונים, קבצים מצורפים, גיבויים ולוגים – לעולם לא ב-git
+data/
+*.db
+*.sqlite
+*.sqlite-*
+*.log
+node_modules/
+.DS_Store

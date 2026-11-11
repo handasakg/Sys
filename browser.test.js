@@ -17,7 +17,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
   const base = 'http://127.0.0.1:4811';
   const adminPw = pw();
   execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', 'create-admin.js'], { cwd: ROOT, env: { ...env, ADMIN_USERNAME: 'chief', ADMIN_FULLNAME: 'דנה לוי', ADMIN_PASSWORD: adminPw } });
-  const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: ROOT, env });
+  const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'start.js'], { cwd: ROOT, env });
   await new Promise(r => srv.stdout.on('data', d => String(d).includes('פועלת') && r()));
   const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome' });
   try {
@@ -245,7 +245,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     rec('לוגו', 'לוגו שהועלה מהגדרות מופיע בתפריט הצד ובמסך הכניסה', lsrc.startsWith('/api/logo?v=') && lok, lsrc);
     await pl.screenshot({ path: path.join(SHOTS, 'login-logo-1280.png') }); await ctxL.close();
     page.once('dialog', d => d.accept());
-    await page.click('text=הסרת לוגו'); await page.click('dialog[open] .btn.danger'); await page.waitForTimeout(400);
+    await page.click('text=חזרה ללוגו ברירת המחדל'); await page.click('dialog[open] .btn.danger'); await page.waitForTimeout(400);
 
     // פס עליון: כרטיס משתמש, שעון, לוגו לדף הבית, "דף הבית"
     await page.goto(base + '/#/admin/users'); await page.waitForSelector('.user-card');
@@ -341,6 +341,47 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     rec('קישורים', `${hrefs.size} קישורים/משאבים נבדקו, אין שבורים`, broken.length === 0, broken.join(', '));
     const anchors = await page.evaluate(() => !!document.getElementById('main'));
     rec('קישורים', 'עוגן "#main" של קישור הדילוג קיים', anchors);
+
+    // ---------- התקנה כאפליקציה ----------
+    {
+      const mf = await (await ctx.request.get(base + '/manifest.webmanifest')).json();
+      const iconsOk = [];
+      for (const ic of mf.icons) { const r = await ctx.request.get(base + ic.src); iconsOk.push(r.status() === 200); }
+      const touch = (await ctx.request.get(base + '/apple-touch-icon.png')).status();
+      rec('אפליקציה', 'מניפסט תקין: שם, display=standalone, אייקונים 192/512 + maskable, אייקון לאייפון', mf.display === 'standalone' && mf.short_name === 'תיאום הנדסי' && mf.icons.some(i => i.sizes === '512x512' && i.purpose === 'maskable') && iconsOk.every(Boolean) && touch === 200, mf.icons.map(i => i.sizes + '/' + i.purpose).join(', '));
+      const ip = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
+      await ip.goto(base + '/'); await ip.waitForSelector('.auth-logo');
+      const swOk = await ip.evaluate(() => navigator.serviceWorker.ready.then(r => !!r.active).catch(() => false));
+      const logoDef = await ip.evaluate(() => { const i = document.querySelector('.auth-logo'); return i.getAttribute('src') === '/logo.png' && i.naturalWidth > 0; });
+      rec('אפליקציה', 'Service worker פעיל, ולוגו ברירת המחדל (קריית גת) מוצג במסך הכניסה', swOk && logoDef);
+      const hiddenFirst = await ip.evaluate(() => document.querySelector('.install-btn').hidden);
+      await ip.evaluate(() => { const e = new Event('beforeinstallprompt'); e.prompt = () => { window.__prompted = true; }; e.userChoice = Promise.resolve({ outcome: 'accepted' }); window.dispatchEvent(e); });
+      const shown = await ip.evaluate(() => !document.querySelector('.install-btn').hidden);
+      await ip.click('.install-btn'); await ip.waitForTimeout(150);
+      const after = await ip.evaluate(() => ({ prompted: !!window.__prompted, hidden: document.querySelector('.install-btn').hidden }));
+      await ip.reload(); await ip.waitForSelector('.auth-logo');
+      const stillHidden = await ip.evaluate(() => document.querySelector('.install-btn').hidden);
+      rec('אפליקציה', 'כפתור ההתקנה מופיע רק כשהדפדפן מציע התקנה, פותח את חלון ההתקנה, ונעלם אחרי ההתקנה', hiddenFirst && shown && after.prompted && after.hidden && stillHidden, JSON.stringify({ hiddenFirst, shown, ...after, stillHidden }));
+      await ip.context().close();
+      const { devices } = require(process.env.PLAYWRIGHT_PATH || '/opt/npm-tools/node_modules/playwright');
+      const ictx = await browser.newContext({ ...devices['iPhone 13'] }); const iph = await ictx.newPage();
+      await iph.goto(base + '/'); await iph.waitForSelector('.auth-logo');
+      const iVisible = await iph.evaluate(() => !document.querySelector('.install-btn').hidden);
+      await iph.click('.install-btn'); await iph.waitForSelector('dialog[open]');
+      const steps = await iph.textContent('dialog[open] .inst-steps');
+      await iph.click('text=כבר התקנתי'); await iph.waitForTimeout(150);
+      const iHidden = await iph.evaluate(() => document.querySelector('.install-btn').hidden);
+      const sz = await iph.evaluate(() => 1);
+      rec('אפליקציה', 'באייפון: הכפתור מציג הוראות "הוספה למסך הבית", ואפשר להסתיר אותו אחרי ההתקנה', iVisible && /הוספה למסך הבית/.test(steps) && iHidden, steps.slice(0, 80));
+      await iph.screenshot({ path: path.join(SHOTS, 'iphone-login.png') });
+      await ictx.close();
+      const sctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      await sctx.addInitScript(() => { const o = window.matchMedia.bind(window); window.matchMedia = (q) => /display-mode: standalone/.test(q) ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} } : o(q); });
+      const sp2 = await sctx.newPage(); await sp2.goto(base + '/'); await sp2.waitForSelector('.auth-logo');
+      await sp2.evaluate(() => { const e = new Event('beforeinstallprompt'); e.prompt = () => {}; e.userChoice = Promise.resolve({ outcome: 'dismissed' }); window.dispatchEvent(e); });
+      rec('אפליקציה', 'בתוך האפליקציה המותקנת לא מוצג שום כפתור התקנה', await sp2.evaluate(() => document.querySelectorAll('.install-btn:not([hidden])').length === 0));
+      await sctx.close();
+    }
 
     // ---------- ביצועים ----------
     const perfPage = await (await browser.newContext()).newPage();

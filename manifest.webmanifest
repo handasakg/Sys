@@ -1,1 +1,25 @@
-{ "name": "מערכת תיאום הנדסי", "short_name": "תיאום הנדסי", "lang": "he", "dir": "rtl", "start_url": "/", "display": "standalone", "background_color": "#F2F4F1", "theme_color": "#17252A", "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }] }
+{
+  "id": "/",
+  "name": "מערכת תיאום הנדסי",
+  "short_name": "תיאום הנדסי",
+  "description": "מעקב בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה, גורמי תשתית, פרויקטים ומסמכים.",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "/?source=app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#EEF3F7",
+  "theme_color": "#0E4D92",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "ממתין לטיפולי", "url": "/#/requests?scope=pending_me", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "בקשה חדשה", "url": "/#/requests/new", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

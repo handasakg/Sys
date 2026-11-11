@@ -3,7 +3,7 @@
    כלל אבטחה: כל טקסט שמגיע מהשרת נכנס ל-DOM רק דרך textContent (פונקציית h). אין innerHTML עם נתונים. */
 (() => {
   const S = { me: null, csrf: null, perms: new Set(), meta: null, prefs: {}, title: 'מערכת תיאום הנדסי', org: 'מינהל הנדסה', logo: null };
-  const logoUrl = () => (S.logo ? `/api/logo?v=${encodeURIComponent(S.logo)}` : '/favicon.svg');
+  const logoUrl = () => (S.logo ? `/api/logo?v=${encodeURIComponent(S.logo)}` : '/logo.png'); // ברירת מחדל: הלוגו הקבוע של הארגון
   const root = document.getElementById('root');
 
   // ---------- DOM ----------
@@ -53,6 +53,8 @@
     edit: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4',
     task: 'M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2',
     chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
+    install: 'M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM12 6v8M8.5 10.5L12 14l3.5-3.5M10 18h4',
+    share: 'M12 3v12M8 7l4-4 4 4M5 11v9h14v-9',
   };
   function icon(name) {
     const svg = document.createElementNS(NS, 'svg');
@@ -220,6 +222,47 @@
     return 'm-white';
   }
 
+  // ---------- התקנה כאפליקציה (Android, iPhone/iPad, מחשב) ----------
+  const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* */ } } };
+  const Install = { evt: null, btns: new Set() };
+  const ua = navigator.userAgent;
+  const isIOS = /iphone|ipad|ipod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isMacSafari = !isIOS && /Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|Edg|Firefox|OPR/.test(ua);
+  const isStandalone = () => matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches || navigator.standalone === true;
+  function canInstall() {
+    if (isStandalone() || LS.get('app-installed') === '1') return false;
+    return !!Install.evt || isIOS || isMacSafari; // Chrome/Edge/Samsung: אירוע התקנה. iOS / Safari במק: הוראות
+  }
+  function refreshInstall() { const show = canInstall(); for (const b of Install.btns) { if (!b.isConnected) Install.btns.delete(b); else b.hidden = !show; } }
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); Install.evt = e; refreshInstall(); });
+  window.addEventListener('appinstalled', () => { Install.evt = null; LS.set('app-installed', '1'); refreshInstall(); toast('האפליקציה הותקנה. אפשר לפתוח אותה מהמסך הראשי או מתפריט התוכניות.'); });
+  matchMedia('(display-mode: standalone)').addEventListener?.('change', refreshInstall);
+  async function doInstall() {
+    if (Install.evt) {
+      const e = Install.evt; Install.evt = null; refreshInstall();
+      e.prompt();
+      const { outcome } = await e.userChoice;
+      if (outcome === 'accepted') LS.set('app-installed', '1');
+      refreshInstall(); return;
+    }
+    const step = (n, ...t) => h('li', null, h('span', { class: 'inst-n', 'aria-hidden': 'true' }, String(n)), h('span', null, ...t));
+    const shareIcon = h('span', { class: 'inst-ic' }, icon('share'));
+    const steps = isIOS
+      ? h('ol', { class: 'inst-steps' }, step(1, 'לחצו על כפתור השיתוף ', shareIcon, ' (בספארי בפס התחתון, בכרום למעלה).'), step(2, 'גללו ובחרו ', h('strong', null, '"הוספה למסך הבית"'), '.'), step(3, 'לחצו ', h('strong', null, '"הוסף"'), '. הסמל יופיע במסך הבית.'))
+      : h('ol', { class: 'inst-steps' }, step(1, 'בתפריט העליון של ספארי בחרו ', h('strong', null, 'קובץ'), '.'), step(2, 'בחרו ', h('strong', null, '"הוספה ל-Dock"'), ' ואשרו.'), step(3, 'המערכת תיפתח כאפליקציה מה-Dock ומ-Launchpad.'));
+    const m = modal('התקנה כאפליקציה', h('div', null, h('p', null, 'כך מתקינים את המערכת במכשיר הזה:'), steps), [
+      h('button', { class: 'btn primary', type: 'button', onclick: () => m.close() }, 'הבנתי'),
+      h('button', { class: 'btn ghost', type: 'button', onclick: () => { LS.set('app-installed', '1'); refreshInstall(); m.close(); } }, 'כבר התקנתי – להסתיר את הכפתור')]);
+  }
+  // compact: כפתור סמל קטן (פס עליון). אחרת: כפתור טקסט קטן (מסך כניסה)
+  function installButton(compact) {
+    const b = compact
+      ? h('button', { class: 'btn ghost icon-btn install-btn', type: 'button', 'aria-label': 'התקנת המערכת כאפליקציה', title: 'התקנה כאפליקציה', onclick: doInstall }, icon('install'))
+      : h('button', { class: 'btn sm ghost install-btn', type: 'button', onclick: doInstall }, icon('install'), 'התקנה כאפליקציה');
+    b.hidden = !canInstall(); Install.btns.add(b); return b;
+  }
+  if ('serviceWorker' in navigator) window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => { /* ההתקנה פשוט לא תוצע */ }); });
+
   // ---------- מסך כניסה ----------
   // רקע מונפש למסך הכניסה: קווי תשתית (מים, חשמל, תקשורת, גז, ניקוז) שזורמים לאורך הפאנל, עם תחנות שמהבהבות בעדינות.
   function authBackdrop() {
@@ -249,11 +292,11 @@
         h('div', { class: 'auth-lines', 'aria-hidden': 'true' },
           [['m-water', 'מים וביוב'], ['m-power', 'חשמל'], ['m-telecom', 'תקשורת'], ['m-gas', 'גז'], ['m-sewer', 'ניקוז ונוף']].map(([c, l]) => h('span', null, h('i', { class: 'mark ' + c }), l)))),
       h('div'));
-    const logo = h('div', { class: 'auth-logo-wrap' }, h('img', { class: 'auth-logo' + (S.logo ? '' : ' default'), src: logoUrl(), alt: S.logo ? `לוגו ${S.org}` : '' }));
+    const logo = h('div', { class: 'auth-logo-wrap' }, h('img', { class: 'auth-logo', src: logoUrl(), alt: `לוגו ${S.org}` }));
     root.replaceChildren(h('div', { class: 'auth' }, art, h('main', { class: 'auth-form', id: 'main' }, h('div', { class: 'box' }, logo, formContent))));
   }
   function authLinks() {
-    return h('div', { class: 'links' }, h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'מדיניות פרטיות'));
+    return h('div', { class: 'links' }, h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'מדיניות פרטיות'), installButton(false));
   }
   function renderLogin(message) {
     document.title = 'כניסה – ' + (S.title || 'מערכת תיאום הנדסי');
@@ -362,8 +405,8 @@
       for (const [href, label, ic] of items) nav.append(h('a', { href, 'data-href': href, title: label }, icon(ic), h('span', { class: 'lbl' }, label)));
     }
     const sidebar = h('aside', { class: 'sidebar', id: 'sidebar', 'aria-label': 'תפריט' },
-      h('a', { class: 'brand' + (S.logo ? ' has-logo' : ''), href: '#/', 'aria-label': `${S.title} – מעבר לדף הבית`, title: 'לדף הבית' },
-        h('img', { class: 'brand-mark' + (S.logo ? ' custom' : ''), src: logoUrl(), alt: '' }),
+      h('a', { class: 'brand has-logo', href: '#/', 'aria-label': `${S.title} – מעבר לדף הבית`, title: 'לדף הבית' },
+        h('img', { class: 'brand-mark custom', src: logoUrl(), alt: '' }),
         h('div', { class: 'brand-text', 'aria-hidden': 'true' }, h('div', { class: 'brand-title' }, S.title), h('div', { class: 'brand-org' }, S.org))),
       nav, h('div', { class: 'side-foot' }, h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'פרטיות')));
     const bellCount = h('span', { class: 'badge-dot', hidden: !S.unread }, String(S.unread || ''));
@@ -373,7 +416,7 @@
       h('form', { role: 'search', class: 'grow', onsubmit: (e) => { e.preventDefault(); const q = e.target.q.value.trim(); location.hash = '#/requests?scope=' + (can('requests.view_all') ? 'all' : 'mine') + (q ? '&q=' + encodeURIComponent(q) : ''); } },
         h('label', { for: 'gsearch', class: 'sr-only' }, 'חיפוש בקשה'),
         h('input', { id: 'gsearch', name: 'q', type: 'search', placeholder: 'חיפוש לפי מספר, נושא או כתובת', maxlength: 100, style: { 'max-width': '420px' } })),
-      h('div', { class: 'spacer' }), clockEl(), bell, userCard(),
+      h('div', { class: 'spacer' }), clockEl(), installButton(true), bell, userCard(),
       h('button', { class: 'btn ghost icon-btn', type: 'button', 'aria-label': 'יציאה מהמערכת', title: 'יציאה', onclick: logout }, icon('out')));
     const main = h('main', { class: 'content', id: 'main', tabindex: '-1' });
     const footer = h('footer', { class: 'footer' }, h('span', null, `© ${new Date().getFullYear()} ${S.org}`),
@@ -1639,7 +1682,7 @@
     // לוגו
     const lStatus = h('p', { class: 'small', role: 'status', 'aria-live': 'polite' });
     const lInput = h('input', { type: 'file', id: 'logo-file', accept: '.png,.jpg,.jpeg,.webp', class: 'sr-only' });
-    const lImg = h('img', { src: logoUrl(), alt: s.logo ? 'הלוגו הנוכחי' : 'סמל ברירת המחדל', class: 'logo-preview' });
+    const lImg = h('img', { src: logoUrl(), alt: s.logo ? 'הלוגו הנוכחי' : 'לוגו ברירת המחדל', class: 'logo-preview' });
     lInput.addEventListener('change', async () => {
       const f = lInput.files[0]; if (!f) return;
       if (!/\.(png|jpe?g|webp)$/i.test(f.name)) { lStatus.className = 'small sev-critical'; lStatus.textContent = 'הלוגו חייב להיות PNG, JPG או WebP.'; return; }
@@ -1650,14 +1693,14 @@
       catch (ex) { lStatus.className = 'small sev-critical'; lStatus.textContent = ex.message; }
     });
     const logoPanel = h('section', { class: 'panel', 'aria-labelledby': 'logo-h' }, h('h2', { id: 'logo-h' }, 'לוגו'),
-      h('p', { class: 'muted' }, 'מופיע במסך הכניסה ובראש תפריט הצד. PNG, JPG או WebP עד 1MB. מומלץ רקע שקוף.'),
+      h('p', { class: 'muted' }, s.logo ? 'לוגו שהועלה. מופיע במסך הכניסה ובראש תפריט הצד.' : 'מוצג לוגו ברירת המחדל של הארגון. אפשר להחליף אותו: PNG, JPG או WebP עד 1MB, מומלץ רקע שקוף.'),
       h('div', { class: 'logo-box' }, lImg),
       h('div', { style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap', 'margin-top': '12px' } },
         h('label', { class: 'btn primary', for: 'logo-file' }, icon('upload'), s.logo ? 'החלפת לוגו' : 'העלאת לוגו'), lInput,
         s.logo ? h('button', { class: 'btn danger', type: 'button', onclick: async () => {
-          if (!(await confirmDlg('הסרת לוגו', 'להסיר את הלוגו ולחזור לסמל ברירת המחדל?', 'הסרה', true))) return;
-          try { await api('DELETE', '/api/admin/logo'); await refreshMe(); toast('הלוגו הוסר'); renderShell(); route(); } catch (ex) { toast(ex.message, true); }
-        } }, 'הסרת לוגו') : null), lStatus);
+          if (!(await confirmDlg('חזרה ללוגו ברירת המחדל', 'להסיר את הלוגו שהועלה ולחזור ללוגו ברירת המחדל?', 'חזרה לברירת המחדל', true))) return;
+          try { await api('DELETE', '/api/admin/logo'); await refreshMe(); toast('חזרנו ללוגו ברירת המחדל'); renderShell(); route(); } catch (ex) { toast(ex.message, true); }
+        } }, 'חזרה ללוגו ברירת המחדל') : null), lStatus);
     main.replaceChildren(pageHead('הגדרות וקבצים', 'גורמי התשתית עברו למסך "תפקידים והרשאות", בלשונית משלהם.'), h('div', { class: 'grid two' }, h('div', null, logoPanel, files), h('div', null, general, numbering)));
   }
   async function refreshMe() {

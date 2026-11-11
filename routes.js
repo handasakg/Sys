@@ -11,6 +11,7 @@ const W = require('./workflow');
 const up = require('./uploads');
 const backup = require('./backup');
 const mailer = require('./mailer');
+const cloud = require('./cloudsync');
 
 // ---------------- נתב ----------------
 const table = [];
@@ -352,6 +353,7 @@ route('DELETE', '/api/requests/:id', (req) => {
   const files = db.prepare('SELECT stored_name FROM documents WHERE request_id = ?').all(r.id);
   db.prepare('DELETE FROM requests WHERE id = ?').run(r.id);
   for (const f of files) fs.rm(up.storedPath(f.stored_name), { force: true }, () => {});
+  cloud.deleteFiles(files.map(f => 'uploads/' + f.stored_name));
   audit(req, 'request_deleted', { id: r.id, number: r.number }, 'warning');
   return { ok: true };
 });
@@ -498,6 +500,8 @@ route('POST', '/api/documents', async (req) => {
   try { f = await up.handleUpload(req); }
   catch (e) { if (e.status === 415 || e.status === 413) audit(req, 'upload_rejected', { reason: e.message }, 'warning'); throw e; }
   try {
+    try { await cloud.putFile('uploads/' + f.stored, fs.readFileSync(up.storedPath(f.stored)), f.mime); }
+    catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); throw new HttpError(503, 'שמירת הקובץ בענן נכשלה. נסו שוב בעוד רגע.'); }
     const requestId = v.id(f.fields.request_id); const projectId = v.id(f.fields.project_id);
     assertDocTarget(req, requestId, projectId);
     const category = v.str(f.fields.category, { max: 60, name: 'קטגוריה' });
@@ -506,7 +510,7 @@ route('POST', '/api/documents', async (req) => {
     if (requestId) history(requestId, req.user.id, 'הועלה מסמך', f.original);
     audit(req, 'file_uploaded', { id: Number(info.lastInsertRowid), name: f.original, size: f.size });
     return status(201, { id: Number(info.lastInsertRowid) });
-  } catch (e) { fs.rm(up.storedPath(f.stored), { force: true }, () => {}); throw e; }
+  } catch (e) { fs.rm(up.storedPath(f.stored), { force: true }, () => {}); if (e.status !== 503) cloud.deleteFiles(['uploads/' + f.stored]); throw e; }
 });
 
 // מדיניות צפייה במסמכים (נקבעת בהגדרות): 'own' = כל משתמש רואה רק מה שהעלה; מנהל המערכת רואה הכל.
@@ -530,11 +534,11 @@ route('GET', '/api/documents', (req) => {
     FROM documents d JOIN users u ON u.id = d.uploaded_by LEFT JOIN requests r ON r.id = d.request_id LEFT JOIN projects p ON p.id = d.project_id ORDER BY d.id DESC LIMIT 1000`).all();
   return { items: rows.filter(d => canSeeDoc(req, d)), ownOnly: docsOwnOnly() && !isSysAdmin(req) };
 });
-route('GET', '/api/documents/:id/download', (req, res) => {
+route('GET', '/api/documents/:id/download', async (req, res) => {
   requirePerm(req, 'files.download');
   const d = loadDoc(req);
   const file = up.storedPath(d.stored_name);
-  if (!fs.existsSync(file)) throw new HttpError(404, 'הקובץ לא נמצא באחסון');
+  if (!(await cloud.ensureLocal('uploads/' + d.stored_name, file))) throw new HttpError(404, 'הקובץ לא נמצא באחסון');
   const ascii = d.original_name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   res.writeHead(200, {
     'Content-Type': d.mime, 'Content-Length': fs.statSync(file).size,
@@ -550,6 +554,7 @@ route('DELETE', '/api/documents/:id', (req) => {
   if (!(can(req, 'files.delete_all') || (can(req, 'files.delete_own') && d.uploaded_by === req.user.id))) throw new HttpError(403, 'אין הרשאה למחוק קובץ זה');
   db.prepare('DELETE FROM documents WHERE id = ?').run(d.id);
   fs.rm(up.storedPath(d.stored_name), { force: true }, () => {});
+  cloud.deleteFiles(['uploads/' + d.stored_name]);
   if (d.request_id) history(d.request_id, req.user.id, 'נמחק מסמך', d.original_name);
   audit(req, 'file_deleted', { id: d.id, name: d.original_name });
   return { ok: true };
@@ -612,6 +617,7 @@ route('DELETE', '/api/projects/:id', (req) => {
   const info = db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
   if (!info.changes) throw new HttpError(404, 'פרויקט לא נמצא');
   for (const f of files) fs.rm(up.storedPath(f.stored_name), { force: true }, () => {});
+  cloud.deleteFiles(files.map(f => 'uploads/' + f.stored_name));
   audit(req, 'project_deleted', { id: req.params.id }, 'warning');
   return { ok: true };
 });
@@ -1046,10 +1052,11 @@ route('GET', '/api/admin/audit', (req) => {
   return { items, summary: { failedLogins: count('login_failed'), lockouts: count('account_locked'), csrf: count('csrf_token_invalid') + count('csrf_origin_blocked') + count('csrf_header_missing'),
     denied: count('permission_denied'), uploadsRejected: count('upload_rejected'), rateLimited: count('login_rate_limited') + count('rate_limited'), topIps } };
 });
-route('GET', '/api/admin/backups', (req) => { requirePerm(req, 'admin.backup'); return { status: backup.status(), items: backup.listBackups().slice(0, 100) }; });
+route('GET', '/api/admin/backups', (req) => { requirePerm(req, 'admin.backup'); return { status: backup.status(), cloud: cloud.state, items: backup.listBackups().slice(0, 100) }; });
 route('POST', '/api/admin/backups', async (req) => {
   requirePerm(req, 'admin.backup');
   const r = await backup.runBackup('manual');
+  if (cloud.enabled) await cloud.syncNow('manual');
   audit(req, 'backup_manual', r, 'notice');
   return r;
 });
@@ -1066,10 +1073,11 @@ route('POST', '/api/admin/logo', async (req) => {
   if (file.data.length > 1024 * 1024) throw new HttpError(413, 'הלוגו גדול מ-1MB');
   if (!up.SIGNATURES[ext](file.data)) throw new HttpError(415, 'תוכן הקובץ אינו תמונה תקינה');
   const name = `logo-${Date.now()}.${ext === 'jpeg' ? 'jpg' : ext}`;
+  try { await cloud.putFile('logo/' + name, file.data, LOGO_TYPES[ext]); } catch (e) { throw new HttpError(503, 'שמירת הלוגו בענן נכשלה. נסו שוב בעוד רגע.'); }
   fs.writeFileSync(path.join(config.dataDir, name), file.data, { mode: 0o600 });
   const old = getSetting('org.logo');
   setSetting('org.logo', name);
-  if (old && /^logo-\d+\.(png|jpg|webp)$/.test(old)) fs.rm(path.join(config.dataDir, old), { force: true }, () => {});
+  if (old && /^logo-\d+\.(png|jpg|webp)$/.test(old)) { fs.rm(path.join(config.dataDir, old), { force: true }, () => {}); cloud.deleteFiles(['logo/' + old]); }
   audit(req, 'logo_updated', { size: file.data.length }, 'notice');
   return { ok: true, logo: name };
 });
@@ -1077,15 +1085,15 @@ route('DELETE', '/api/admin/logo', (req) => {
   requirePerm(req, 'admin.settings');
   const old = getSetting('org.logo');
   setSetting('org.logo', '');
-  if (old && /^logo-\d+\.(png|jpg|webp)$/.test(old)) fs.rm(path.join(config.dataDir, old), { force: true }, () => {});
+  if (old && /^logo-\d+\.(png|jpg|webp)$/.test(old)) { fs.rm(path.join(config.dataDir, old), { force: true }, () => {}); cloud.deleteFiles(['logo/' + old]); }
   audit(req, 'logo_removed', {}, 'notice');
   return { ok: true };
 });
-route('GET', '/api/logo', (req, res) => {
+route('GET', '/api/logo', async (req, res) => {
   const name = getSetting('org.logo');
   if (!name || !/^logo-\d+\.(png|jpg|webp)$/.test(name)) throw new HttpError(404, 'אין לוגו');
   const file = path.join(config.dataDir, name);
-  if (!fs.existsSync(file)) throw new HttpError(404, 'אין לוגו');
+  if (!(await cloud.ensureLocal('logo/' + name, file))) throw new HttpError(404, 'אין לוגו');
   const buf = fs.readFileSync(file);
   res.writeHead(200, { 'Content-Type': LOGO_TYPES[name.split('.').pop()], 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=31536000, immutable',
     'Content-Security-Policy': "default-src 'none'; sandbox", 'Cross-Origin-Resource-Policy': 'same-origin' });

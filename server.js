@@ -14,7 +14,8 @@ const routes = require('./routes');
 const PUBLIC = config.ROOT;
 // כל הקבצים יושבים באותה תיקייה, ולכן מוגשים לדפדפן רק הקבצים שברשימה הזו.
 // קוד השרת, .env, מסד הנתונים, הגיבויים והבדיקות לעולם לא נגישים מהרשת.
-const PUBLIC_FILES = new Set(['index.html', 'app.js', 'app.css', 'app.min.js', 'app.min.css', 'favicon.svg', 'og-image.png',
+const PUBLIC_FILES = new Set(['index.html', 'app.js', 'app.css', 'app.min.js', 'app.min.css', 'favicon.svg', 'og-image.png', 'logo.png', 'sw.js',
+  'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon-32.png',
   'manifest.webmanifest', 'robots.txt', 'sitemap.xml', 'privacy.html', 'accessibility.html', '404.html']);
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -89,7 +90,8 @@ function serveStatic(req, res, urlPath, query) {
   res.setHeader('ETag', e.etag);
   res.setHeader('Vary', 'Accept-Encoding');
   const versioned = query.has('v') && /^(app(\.min)?\.(js|css))$/.test(path.basename(file));
-  res.setHeader('Cache-Control', e.ext === '.html' ? 'no-cache' : versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=3600');
+  res.setHeader('Cache-Control', e.ext === '.html' || name === 'sw.js' || name === 'manifest.webmanifest' ? 'no-cache' : versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=3600');
+  if (name === 'sw.js') res.setHeader('Service-Worker-Allowed', '/');
   if (req.headers['if-none-match'] === e.etag) { res.writeHead(304); res.end(); return true; }
   const ae = String(req.headers['accept-encoding'] || '');
   let body = e.buf;
@@ -219,13 +221,44 @@ server.headersTimeout = 20000;
 server.requestTimeout = 120000;
 server.keepAliveTimeout = 5000;
 
-if (require.main === module) {
-  const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-  server.listen(config.port, config.host, () => {
-    console.log(`מערכת תיאום הנדסי פועלת: http://${config.host}:${config.port}  (${config.isProd ? 'production' : 'development'})`);
-    if (userCount === 0) console.log('אין עדיין משתמשים. צרו מנהל מערכת:  node create-admin.js');
-  });
-  if (process.env.DISABLE_BACKUPS !== '1') backup.startScheduler();
+// מנהל ראשון ממשתני סביבה (ADMIN_USERNAME / ADMIN_FULLNAME / ADMIN_PASSWORD) – רק כשאין עדיין אף משתמש
+async function bootstrapAdmin() {
+  const { ADMIN_USERNAME: un, ADMIN_FULLNAME: fn, ADMIN_PASSWORD: pw } = process.env;
+  if (!un || !pw || db.prepare('SELECT COUNT(*) AS c FROM users').get().c > 0) return false;
+  if (!/^[a-zA-Z0-9._-]{3,60}$/.test(un)) { console.error('ADMIN_USERNAME לא תקין'); return false; }
+  const probs = sec.passwordProblems(pw, un);
+  if (probs.length) { console.error('ADMIN_PASSWORD חלשה: ' + probs.join(', ')); return false; }
+  const role = db.prepare('SELECT id FROM roles WHERE system = 1').get();
+  db.prepare('INSERT INTO users (username, full_name, password_hash, role_id) VALUES (?, ?, ?, ?)').run(un, fn || un, await sec.hashPassword(pw), role.id);
+  console.log(`נוצר מנהל מערכת: ${un}`);
+  return true;
 }
 
-module.exports = { server };
+function start() {
+  const cloud = require('./cloudsync');
+  cloud.attach(db);
+  // כל בקשה שמשנה נתונים ומצליחה → שמירת המסד לענן (מאוחדת)
+  server.on('request', (req, res) => {
+    if (cloud.enabled && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.url.startsWith('/api/')) res.on('finish', () => { if (res.statusCode < 400) cloud.schedule(); });
+  });
+  return bootstrapAdmin().then((created) => {
+    if (created) cloud.schedule(500);
+    const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+    server.listen(config.port, config.host, () => {
+      console.log(`מערכת תיאום הנדסי פועלת: http://${config.host}:${config.port}  (${config.isProd ? 'production' : 'development'})`);
+      if (cloud.enabled) console.log(`סנכרון ענן: ${cloud.state.restore ? cloud.state.restore.status : 'פעיל'}`);
+      if (userCount === 0) console.log('אין עדיין משתמשים. צרו מנהל מערכת:  node create-admin.js  (או הגדירו ADMIN_USERNAME / ADMIN_PASSWORD)');
+    });
+    if (process.env.DISABLE_BACKUPS !== '1') backup.startScheduler();
+    // כיבוי מסודר (Render שולח SIGTERM לפני כיבוי): שמירה אחרונה לענן
+    let stopping = false;
+    for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => {
+      if (stopping) return; stopping = true;
+      server.close();
+      try { await Promise.race([cloud.flush(), new Promise(r => setTimeout(r, 20000))]); } catch { /* */ }
+      process.exit(0);
+    });
+  });
+}
+
+module.exports = { server, start };

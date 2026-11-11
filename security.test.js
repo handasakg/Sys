@@ -15,7 +15,7 @@ const pw = () => 'Tst' + crypto.randomBytes(9).toString('base64url') + '7a';
 
 function startServer(env, port) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(port), DISABLE_BACKUPS: '1', ...env } });
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'start.js'], { cwd: ROOT, env: { ...process.env, PORT: String(port), DISABLE_BACKUPS: '1', ...env } });
     let out = '';
     child.stdout.on('data', d => { out += d; if (out.includes('פועלת')) resolve(child); });
     child.stderr.on('data', d => { out += d; });
@@ -550,6 +550,63 @@ class Client {
       r = await brute.login('ghost-y', 'x');
       rec('Rate limiting', 'הגבלת ניסיונות כניסה נשמרת במסד ושורדת הפעלה מחדש של השרת', r.status === 429);
       srv.kill(); await new Promise(res => srv.on('exit', res)); smtp.close();
+    }
+
+    // ---------- מופע 4: סנכרון לענן (שרת מדומה בתבנית Supabase Storage) ----------
+    {
+      const store = new Map(); let failGet = false; let badKey = 0; let puts = 0;
+      const mock = require('node:http').createServer(async (q, s2) => {
+        const chunks = []; for await (const c of q) chunks.push(c); const body = Buffer.concat(chunks);
+        if (q.headers.apikey !== 'sb_secret_test') { badKey++; s2.writeHead(401); return s2.end('{"error":"bad key"}'); }
+        const m = q.url.match(/^\/storage\/v1\/object\/handasa(?:\/(.+))?$/); if (!m) { s2.writeHead(404); return s2.end(); }
+        const key = m[1] ? m[1].split('/').map(decodeURIComponent).join('/') : null;
+        if (q.method === 'POST' && key) { store.set(key, body); puts++; s2.writeHead(200, { 'Content-Type': 'application/json' }); return s2.end('{"Key":"x"}'); }
+        if (q.method === 'GET' && key) {
+          if (failGet && key.startsWith('db/')) { s2.writeHead(503); return s2.end('paused'); }
+          if (!store.has(key)) { s2.writeHead(400, { 'Content-Type': 'application/json' }); return s2.end('{"statusCode":"404","error":"not_found","message":"Object not found"}'); }
+          s2.writeHead(200); return s2.end(store.get(key));
+        }
+        if (q.method === 'DELETE' && !key) { for (const k of JSON.parse(body).prefixes) store.delete(k); s2.writeHead(200); return s2.end('[]'); }
+        s2.writeHead(405); s2.end();
+      });
+      await new Promise(res => mock.listen(4830, '127.0.0.1', res));
+      const cdir = fs.mkdtempSync(path.join(os.tmpdir(), 'coord-cloud-'));
+      const cenv = { NODE_ENV: 'production', FORCE_HTTPS: '0', TRUST_PROXY: '1', DATA_DIR: cdir, UPLOAD_DIR: path.join(cdir, 'uploads'), BACKUP_DIR: path.join(cdir, 'backups'), LOG_DIR: path.join(cdir, 'logs'),
+        SUPABASE_URL: 'http://127.0.0.1:4830', SUPABASE_SERVICE_KEY: 'sb_secret_test', SUPABASE_BUCKET: 'handasa', ADMIN_USERNAME: 'boss', ADMIN_FULLNAME: 'מנהלת', ADMIN_PASSWORD: adminPw };
+      const cb = 'http://127.0.0.1:4804';
+      srv = await startServer(cenv, 4804);
+      const cA = new Client(cb); r = await cA.login('boss', adminPw); cA.csrf = r.data && r.data.csrf;
+      rec('ענן', 'מנהל ראשון נוצר אוטומטית ממשתני הסביבה (ADMIN_USERNAME / ADMIN_PASSWORD)', r.status === 200);
+      await cA.req('POST', '/api/auth/change-password', { current: adminPw, next: adminPw + 'x' }).then(x => { cA.csrf = x.data.csrf; });
+      const roles2 = (await cA.req('GET', '/api/admin/roles')).data.items;
+      const nu = await cA.req('POST', '/api/admin/users', { username: 'cloud.user', full_name: 'משתמש ענן', role_id: roles2[4].id, password: pw(), no_request: true, no_infra: true });
+      const rq = await cA.req('POST', '/api/requests', { type: 'planning', title: 'בקשה שנשמרה בענן', submit: true });
+      const fdc = new FormData(); fdc.append('request_id', String(rq.data.id)); fdc.append('file', new Blob([Buffer.from('%PDF-1.4\n% cloud\n%%EOF')]), 'cloud.pdf');
+      const cd = await cA.req('POST', '/api/documents', fdc);
+      const fdl = new FormData(); fdl.append('file', new Blob([Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(100, 7)])]), 'logo.png');
+      await cA.req('POST', '/api/admin/logo', fdl);
+      rec('ענן', 'קבצים ולוגו עולים לענן מיד בהעלאה', [...store.keys()].some(k => k.startsWith('uploads/')) && [...store.keys()].some(k => k.startsWith('logo/')), [...store.keys()].join(', '));
+      srv.kill('SIGTERM'); await new Promise(res => srv.on('exit', res));
+      rec('ענן', 'בכיבוי השרת נשמר עותק אחרון של המסד לענן + עותק יומי', store.has('db/app.sqlite') && [...store.keys()].some(k => /^db\/daily\/\d{4}-\d{2}-\d{2}\.sqlite$/.test(k)) && badKey === 0);
+      fs.rmSync(cdir, { recursive: true, force: true }); // מדמה את Render בחינם: הדיסק נמחק
+      srv = await startServer(cenv, 4804);
+      const cB = new Client(cb); r = await cB.login('boss', adminPw + 'x'); cB.csrf = r.data && r.data.csrf;
+      const users2 = r.status === 200 ? (await cB.req('GET', '/api/admin/users')).data.items : [];
+      const rq2 = r.status === 200 ? await cB.req('GET', `/api/requests/${rq.data.id}`) : { status: 0 };
+      const dl2 = await cB.req('GET', `/api/documents/${cd.data.id}/download`, undefined, { raw: true });
+      const dlText = dl2.status === 200 ? await dl2.text() : '';
+      const lg2 = await fetch(cb + '/api/logo');
+      rec('ענן', 'אחרי מחיקת הדיסק והפעלה מחדש: הסיסמה, המשתמש, הבקשה, הקובץ והלוגו חזרו', r.status === 200 && users2.some(u => u.username === 'cloud.user') && rq2.status === 200 && dlText.includes('% cloud') && lg2.status === 200,
+        `כניסה ${r.status}, משתמש ${users2.some(u => u.username === 'cloud.user')}, בקשה ${rq2.status}, קובץ ${dl2.status}, לוגו ${lg2.status}`);
+      srv.kill('SIGTERM'); await new Promise(res => srv.on('exit', res));
+      // הענן לא זמין בהפעלה → השרת לא דורס את העותק הטוב
+      failGet = true; const snap = store.get('db/app.sqlite'); const putsBefore = puts;
+      fs.rmSync(cdir, { recursive: true, force: true });
+      srv = await startServer(cenv, 4804);
+      const cC = new Client(cb); const lc = await cC.login('boss', adminPw); cC.csrf = lc.data && lc.data.csrf;
+      await new Promise(res => setTimeout(res, 4500));
+      rec('ענן', 'כשהענן לא זמין בהפעלה – השרת לא דורס את העותק השמור במסד ריק', Buffer.compare(store.get('db/app.sqlite'), snap) === 0 && !store.has('db/app.sqlite.tmp'), `העלאות אחרי התקלה: ${puts - putsBefore}`);
+      srv.kill('SIGTERM'); await new Promise(res => srv.on('exit', res)); mock.close();
     }
 
     // ---------- מופע 2: HTTPS מחויב ----------
