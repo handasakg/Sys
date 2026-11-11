@@ -422,9 +422,15 @@
     if (!meta || !meta.enabled) { authShell([h('h2', null, 'הגשת בקשה'), h('div', { class: 'form-error', role: 'alert' }, 'הגשת בקשות מהאתר סגורה כרגע.'), h('a', { class: 'btn', href: '#/' }, 'חזרה לכניסה')]); return; }
     const err = errBox(); let police = null;
     const typeSel = sel('type', [['', 'בחרו סוג בקשה'], ...meta.types.map(t => [t.key, t.name])], '');
-    const typeHint = h('span', { class: 'hint', id: 'type-desc', 'aria-live': 'polite' });
+    const typeHint = h('div', { class: 'hint type-hint', id: 'type-desc', 'aria-live': 'polite' });
     typeSel.setAttribute('aria-describedby', 'type-desc');
-    typeSel.addEventListener('change', () => { typeHint.textContent = (meta.types.find(t => t.key === typeSel.value) || {}).description || ''; });
+    // בבחירת סוג: התיאור, וגורמי התשתית הקבועים שיטפלו בבקשה (נכנסים אליה אוטומטית)
+    typeSel.addEventListener('change', () => {
+      const t = meta.types.find(x => x.key === typeSel.value) || {};
+      typeHint.replaceChildren(...[t.description ? h('span', null, t.description) : null,
+        t.bodies && t.bodies.length ? h('span', { class: 'type-bodies' }, h('span', null, 'גורמי התשתית שיטפלו בבקשה, לפי הסדר:'),
+          h('ol', { class: 'chain-steps' }, t.bodies.map((n, i) => h('li', null, h('span', { class: 'seq', 'aria-hidden': 'true' }, String(i + 1)), n)))) : null].filter(Boolean));
+    });
     const fileCard = (name, title, exts, hint) => {
       const id = 'f-' + name; const out = h('span', { class: 'file-name', 'aria-live': 'polite' }, 'לא נבחר קובץ');
       const input = h('input', { type: 'file', id, name, accept: exts.map(e => '.' + e).join(','), class: 'sr-only', required: true, 'aria-required': 'true' });
@@ -1191,7 +1197,7 @@
     const err = errBox();
     const form = h('form', { class: 'panel', novalidate: true }, err,
       h('div', { class: 'row' },
-        field('סוג הבקשה', sel('type', [['', 'בחרו סוג'], ...(S.meta.typesActive || Object.keys(S.meta.types)).concat(r.type && !(S.meta.typesActive || []).includes(r.type) ? [r.type] : []).map(k => [k, T(k)])], r.type), { required: true }),
+        field('סוג הבקשה', sel('type', [['', 'בחרו סוג'], ...(S.meta.typesActive || Object.keys(S.meta.types)).concat(r.type && !(S.meta.typesActive || []).includes(r.type) ? [r.type] : []).map(k => [k, T(k)])], r.type), { required: true, hint: 'בשינוי הסוג, גורמי התשתית מתעדכנים לגורמים הקבועים של הסוג החדש (כל עוד אף גורם לא התחיל לטפל).' }),
         field('פרויקט', inp('project_name', { value: r.project_name || '', maxlength: 200 }))),
       field('נושא הבקשה', inp('title', { value: r.title || '', maxlength: 200 }), { required: true }),
       field('תיאור העבודה', area('description', { value: r.description || '', maxlength: 5000 }), { hint: 'מה מתוכנן, היקף העבודה, תשתיות מושפעות.' }),
@@ -1871,9 +1877,8 @@
 
   // ---------- ניהול: סוגי בקשות ----------
   async function viewAdminTypes(main) {
-    const [{ items, roles }, { items: users }, { items: infra }] = await Promise.all([api('GET', '/api/admin/request-types'), api('GET', '/api/users/lookup'), api('GET', '/api/infra')]);
+    const [{ items, roles }, { items: infra }] = await Promise.all([api('GET', '/api/admin/request-types'), api('GET', '/api/infra')]);
     const reload = () => viewAdminTypes(main);
-    const uName = (id) => (users.find(u => u.id === id) || {}).full_name || '—';
     const bName = (id) => (infra.find(b => b.id === id) || {}).name || '—';
     const rName = (id) => (roles.find(r => r.id === id) || {}).name || 'ברירת מחדל';
     const card = (t) => h('article', { class: 'panel type-card' + (t.active ? '' : ' off') },
@@ -1885,13 +1890,14 @@
           try { await api('DELETE', `/api/admin/request-types/${t.id}`); toast('נמחק'); reload(); } catch (ex) { toast(ex.message, true); } } }, icon('trash')))),
       t.description ? h('p', { class: 'muted' }, t.description) : null,
       h('dl', { class: 'dl' },
-        h('dt', null, 'מטפלים אוטומטיים'), h('dd', null, t.handler_ids.length ? t.handler_ids.map(uName).join(', ') : 'אחראי מיפוי בקשות ומנהל המערכת'),
-        h('dt', null, 'גורמים לפי סדר'), h('dd', null, t.infra_chain.length ? h('ol', { class: 'chain' }, t.infra_chain.map(id => h('li', null, bName(id)))) : 'ייקבעו ידנית על ידי אחראי המיפוי'),
+        h('dt', null, 'גורמי תשתית'), h('dd', null, t.infra_chain.length
+          ? h('ol', { class: 'chain-steps', 'aria-label': 'גורמי התשתית לפי סדר הטיפול' }, t.infra_chain.map((id, i) => h('li', null, h('span', { class: 'seq', 'aria-hidden': 'true' }, String(i + 1)), bName(id))))
+          : h('span', { class: 'muted' }, 'לא נבחרו גורמים')),
         h('dt', null, 'תפקיד לתושב/ת'), h('dd', null, rName(t.role_resident)),
         h('dt', null, 'תפקיד ליזם'), h('dd', null, rName(t.role_entrepreneur)),
         h('dt', null, 'בקשות מסוג זה'), h('dd', null, String(t.requests))));
     function typeDialog(t) {
-      t = t || { active: 1, public: 1, handler_ids: [], infra_chain: [] };
+      t = t || { active: 1, public: 1, infra_chain: [] };
       const err = errBox();
       const pick = orderedPicker(infra.filter(b => b.active || t.infra_chain.includes(b.id)), t.infra_chain, 'גורמי תשתית קבועים, לפי סדר הטיפול');
       const roleSel = (name, val) => sel(name, [['', 'ברירת מחדל (תושב/ת או יזם)'], ...roles.map(r => [r.id, r.name])], val || '');
@@ -1900,8 +1906,6 @@
         field('תיאור (מוצג למגישים)', area('description', { value: t.description || '', maxlength: 500, rows: 2 })),
         h('div', { class: 'row' }, h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'active', checked: !!t.active }), 'פעיל'),
           h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'public', checked: !!t.public }), 'זמין בהגשה מהציבור')),
-        h('fieldset', null, h('legend', null, 'מטפלים אוטומטיים'), h('p', { class: 'small muted' }, 'מקבלים הודעה ואימייל על כל בקשה חדשה מסוג זה. הראשון ברשימה הופך לגורם המטפל.'),
-          h('div', { class: 'req-pick-list' }, users.map(u => h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'h', value: u.id, checked: t.handler_ids.includes(u.id) }), `${u.full_name} (${u.role_name})`)))),
         pick.el,
         h('fieldset', null, h('legend', null, 'הרשאות לנרשמים מהציבור'), h('p', { class: 'small muted' }, 'קבוצת ההרשאות שמקבל מי שנרשם עם סוג בקשה זה. אפשר להגדיר קבוצות נוספות ב"תפקידים והרשאות".'),
           h('div', { class: 'row' }, field('תושב/ת', roleSel('role_resident', t.role_resident)), field('יזם', roleSel('role_entrepreneur', t.role_entrepreneur)))));
@@ -1909,12 +1913,12 @@
       form.addEventListener('submit', async (e) => {
         e.preventDefault(); if (!validate(form, err)) return;
         const data = { name: form.name.value.trim(), description: form.description.value.trim(), active: form.active.checked, public: form.public.checked,
-          handler_ids: [...form.querySelectorAll('input[name=h]:checked')].map(i => Number(i.value)), infra_chain: pick.get(),
+          infra_chain: pick.get(),
           role_resident: form.role_resident.value ? Number(form.role_resident.value) : null, role_entrepreneur: form.role_entrepreneur.value ? Number(form.role_entrepreneur.value) : null };
         try { await api(t.id ? 'PUT' : 'POST', t.id ? `/api/admin/request-types/${t.id}` : '/api/admin/request-types', data); m.close(); toast('סוג הבקשה נשמר'); await refreshMe(); reload(); } catch (ex) { showErr(err, ex.message); }
       });
     }
-    main.replaceChildren(pageHead('סוגי בקשות', 'לכל סוג: מטפלים שמקבלים את הבקשה אוטומטית, גורמי תשתית בסדר קבוע, וקבוצת הרשאות לתושבים וליזמים.',
+    main.replaceChildren(pageHead('סוגי בקשות', 'לכל סוג: גורמי תשתית בסדר קבוע, וקבוצת הרשאות לתושבים וליזמים.',
       h('button', { class: 'btn primary', type: 'button', onclick: () => typeDialog() }, icon('plus'), 'סוג בקשה חדש')), h('div', { class: 'grid two' }, items.map(card)));
   }
 

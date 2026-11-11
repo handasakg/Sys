@@ -335,6 +335,20 @@ route('GET', '/api/requests/:id', (req) => {
       editLocation: canEditRequest(req, r) || can(req, 'requests.mapping') || can(req, 'requests.assign') } };
 });
 
+// גורמי התשתית הקבועים של סוג בקשה (פעילים בלבד, לפי הסדר שהוגדר)
+function typeChain(typeKey) {
+  const t = db.prepare('SELECT infra_chain FROM request_types WHERE key = ?').get(typeKey);
+  return JSON.parse((t && t.infra_chain) || '[]').filter(id => db.prepare('SELECT 1 FROM infra_bodies WHERE id = ? AND active = 1').get(id));
+}
+// מסנכרן את גורמי הבקשה לגורמים הקבועים של הסוג – רק כל עוד אף גורם לא התחיל לטפל (אין החלטות ואין גורם שקיבל תור)
+function syncTypeChain(requestId, typeKey) {
+  const chain = typeChain(typeKey); if (!chain.length) return false;
+  const started = db.prepare("SELECT 1 FROM request_approvals WHERE request_id = ? AND (decision != 'pending' OR notified_at IS NOT NULL)").get(requestId);
+  if (started) return false;
+  db.prepare('DELETE FROM request_approvals WHERE request_id = ?').run(requestId);
+  chain.forEach((bid, i) => db.prepare('INSERT INTO request_approvals (request_id, infra_body_id, seq) VALUES (?, ?, ?)').run(requestId, bid, i + 1));
+  return true;
+}
 route('PUT', '/api/requests/:id', (req) => {
   requireAuth(req);
   const r = loadRequest(req.params.id); assertView(req, r);
@@ -344,6 +358,8 @@ route('PUT', '/api/requests/:id', (req) => {
   db.prepare(`UPDATE requests SET type=?, title=?, description=?, address=?, gush=?, helka=?, project_name=?, work_time=?, planned_start=?, planned_end=?, updated_at=? WHERE id=?`)
     .run(f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_name, f.work_time, f.planned_start, f.planned_end, nowIso(), r.id);
   history(r.id, req.user.id, 'עודכנה', null);
+  // שינוי סוג הבקשה: הגורמים מסתנכרנים לגורמים הקבועים של הסוג החדש
+  if (f.type !== r.type && syncTypeChain(r.id, f.type)) history(r.id, req.user.id, 'גורמי התשתית עודכנו לפי סוג הבקשה', typeChain(f.type).map(id => (db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(id) || {}).name).join(' ← '));
   audit(req, 'request_updated', { id: r.id });
   return { ok: true };
 });
@@ -1232,7 +1248,7 @@ function safePublicRole(role) { return !role.system && !JSON.parse(role.perms).s
 
 route('GET', '/api/public/apply-meta', () => {
   const on = getSetting('public.apply') !== '0';
-  return { enabled: on, types: on ? typesAll().filter(t => t.active && t.public).map(t => ({ key: t.key, name: t.name, description: t.description || '' })) : [],
+  return { enabled: on, types: on ? typesAll().filter(t => t.active && t.public).map(t => ({ key: t.key, name: t.name, description: t.description || '', bodies: typeChain(t.key).map(id => db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(id).name) })) : [],
     maxMb: Math.round(up.maxBytes() / 1048576), routeExt: ROUTE_EXT, workExt: WORKREQ_EXT, map: !!govmapToken(), center: KG_CENTER };
 });
 
@@ -1272,8 +1288,9 @@ route('POST', '/api/public/apply', async (req, res) => {
   let created;
   try {
     const stRoute = keep(routeFile.data); const stWork = keep(workFile.data);
-    const handlers = JSON.parse(type.handler_ids || '[]').filter(id => db.prepare('SELECT 1 FROM users WHERE id = ? AND active = 1').get(id));
-    const chain = JSON.parse(type.infra_chain || '[]').filter(id => db.prepare('SELECT 1 FROM infra_bodies WHERE id = ? AND active = 1').get(id));
+    // אין מטפלים אוטומטיים: הבקשה מגיעה לאחראי מיפוי הבקשות ולמנהל המערכת, והם בוחרים מי מטפל
+    const handlers = [];
+    const chain = typeChain(type.key); // גורמי התשתית הקבועים של הסוג נכנסים לבקשה אוטומטית
     created = tx(() => {
       const u = db.prepare(`INSERT INTO users (username, full_name, email, phone, address, password_hash, role_id, applicant_kind, must_change_pw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
         .run(username, police.applicant_name, email, phone, address, hash, roleId, kind);
@@ -1286,6 +1303,7 @@ route('POST', '/api/public/apply', async (req, res) => {
       const requestId = Number(rq.lastInsertRowid);
       for (const h of handlers) db.prepare('INSERT OR IGNORE INTO user_requests (user_id, request_id) VALUES (?, ?)').run(h, requestId);
       chain.forEach((bid, i) => db.prepare('INSERT OR IGNORE INTO request_approvals (request_id, infra_body_id, seq) VALUES (?, ?, ?)').run(requestId, bid, i + 1));
+      if (chain.length) history(requestId, null, 'גורמי התשתית נקבעו אוטומטית לפי סוג הבקשה', chain.map(id => db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(id).name).join(' ← '));
       db.prepare('INSERT INTO request_police (request_id, data) VALUES (?, ?)').run(requestId, JSON.stringify(police));
       const doc = db.prepare('INSERT INTO documents (request_id, category, original_name, stored_name, mime, size, sha256, uploaded_by, visibility) VALUES (?,?,?,?,?,?,?,?,?)');
       doc.run(requestId, 'תוכנית תוואי', routeChk.original, stRoute.stored, routeChk.mime, stRoute.size, stRoute.sha256, userId, 'default');
@@ -1340,7 +1358,6 @@ function typeFields(b, cur = {}) {
     description: v.str(b.description ?? cur.description, { max: 500, name: 'תיאור' }),
     active: b.active === undefined ? (cur.active ?? 1) : (b.active ? 1 : 0),
     public: b.public === undefined ? (cur.public ?? 1) : (b.public ? 1 : 0),
-    handler_ids: ids(b.handler_ids, 'users', 'מטפלים'),
     infra_chain: ids(b.infra_chain, 'infra_bodies', 'גורמי תשתית'),
     role_resident: role(b.role_resident, 'תפקיד לתושב/ת'),
     role_entrepreneur: role(b.role_entrepreneur, 'תפקיד ליזם'),
@@ -1348,7 +1365,7 @@ function typeFields(b, cur = {}) {
 }
 route('GET', '/api/admin/request-types', (req) => {
   requirePerm(req, 'admin.settings');
-  return { items: typesAll().map(t => ({ ...t, handler_ids: JSON.parse(t.handler_ids), infra_chain: JSON.parse(t.infra_chain),
+  return { items: typesAll().map(t => ({ ...t, handler_ids: undefined, infra_chain: JSON.parse(t.infra_chain),
     requests: db.prepare('SELECT COUNT(*) AS c FROM requests WHERE type = ?').get(t.key).c })),
     roles: db.prepare('SELECT * FROM roles ORDER BY id').all().filter(safePublicRole).map(r => ({ id: r.id, name: r.name })) };
 });
@@ -1358,7 +1375,7 @@ route('POST', '/api/admin/request-types', (req) => {
   if (db.prepare('SELECT 1 FROM request_types WHERE name = ?').get(f.name)) throw new sec.ValidationError('סוג בקשה בשם זה קיים');
   const sort = (db.prepare('SELECT MAX(sort) AS m FROM request_types').get().m || 0) + 1;
   const info = db.prepare(`INSERT INTO request_types (key, name, description, active, public, handler_ids, infra_chain, role_resident, role_entrepreneur, sort) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run('t' + Date.now().toString(36), f.name, f.description, f.active, f.public, JSON.stringify(f.handler_ids || []), JSON.stringify(f.infra_chain || []), f.role_resident ?? null, f.role_entrepreneur ?? null, sort);
+    .run('t' + Date.now().toString(36), f.name, f.description, f.active, f.public, '[]', JSON.stringify(f.infra_chain || []), f.role_resident ?? null, f.role_entrepreneur ?? null, sort);
   audit(req, 'request_type_created', { id: Number(info.lastInsertRowid), name: f.name }, 'notice');
   return status(201, { id: Number(info.lastInsertRowid) });
 });
@@ -1369,7 +1386,7 @@ route('PUT', '/api/admin/request-types/:id', (req) => {
   const f = typeFields(req.body, cur);
   if (db.prepare('SELECT 1 FROM request_types WHERE name = ? AND id != ?').get(f.name, cur.id)) throw new sec.ValidationError('סוג בקשה בשם זה קיים');
   db.prepare(`UPDATE request_types SET name=?, description=?, active=?, public=?, handler_ids=?, infra_chain=?, role_resident=?, role_entrepreneur=? WHERE id=?`)
-    .run(f.name, f.description, f.active, f.public, f.handler_ids ? JSON.stringify(f.handler_ids) : cur.handler_ids, f.infra_chain ? JSON.stringify(f.infra_chain) : cur.infra_chain,
+    .run(f.name, f.description, f.active, f.public, '[]', f.infra_chain ? JSON.stringify(f.infra_chain) : cur.infra_chain,
       f.role_resident === undefined ? cur.role_resident : f.role_resident, f.role_entrepreneur === undefined ? cur.role_entrepreneur : f.role_entrepreneur, cur.id);
   audit(req, 'request_type_updated', { id: cur.id }, 'notice');
   return { ok: true };

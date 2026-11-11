@@ -736,3 +736,10 @@ dialog.viewer-dlg { width: min(1100px, calc(100vw - 24px)); max-width: none; }
 .viewer-empty { display: grid; place-items: center; gap: 10px; text-align: center; padding: 40px 16px; color: var(--ink-2); }
 .viewer-empty svg { width: 40px; height: 40px; stroke: currentColor; fill: none; stroke-width: 1.6; }
 .file-actions, .ok-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+/* סוגי בקשות: הגורמים שנבחרו, לפי סדר */
+.chain-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.chain-steps li { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 4px; border: 1px solid var(--rule); border-radius: 999px; background: var(--surface-2); font-size: .9rem; }
+.chain-steps .seq { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); font-size: .78rem; font-weight: 700; }
+.type-hint { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 10px; }
+.type-hint:empty { display: none; }
+.type-bodies { display: flex; flex-direction: column; gap: 6px; }

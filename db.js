@@ -170,6 +170,8 @@ db.prepare("UPDATE settings SET value = ? WHERE key = 'login.text' AND value = ?
   }
   db.exec("UPDATE requests SET project_name = (SELECT name FROM projects p WHERE p.id = requests.project_id) WHERE project_id IS NOT NULL AND (project_name IS NULL OR project_name = '')");
 }
+// מטפלים אוטומטיים לסוגי בקשות בוטלו
+db.exec("UPDATE request_types SET handler_ids = '[]' WHERE handler_ids != '[]'");
 // זמן העבודה מטופס המשטרה עובר גם לבקשה עצמה
 db.exec("UPDATE requests SET work_time = (SELECT json_extract(p.data, '$.work_time') FROM request_police p WHERE p.request_id = requests.id) WHERE work_time IS NULL AND EXISTS (SELECT 1 FROM request_police p WHERE p.request_id = requests.id)");
 for (const [k, val] of Object.entries({ 'requests.prefix': 'TH', 'requests.with_year': '1', 'requests.pad': '4' })) db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, val);

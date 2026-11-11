@@ -693,7 +693,7 @@ class Client {
       const ent = await ad.req('POST', '/api/admin/roles', { name: 'יזם – עבודות בדרכים', perms: ['requests.view_own', 'files.upload', 'files.download'] });
       const badRole = await ad.req('POST', '/api/admin/request-types', { name: 'ניסיון', role_resident: rid5('מנהל מערכת') });
       rec('סוגי בקשות', 'אי אפשר לתת לנרשמים מהציבור תפקיד עם הרשאות ניהול', badRole.status === 400, badRole.data.error);
-      const ty = await ad.req('POST', '/api/admin/request-types', { name: 'עבודות בדרכים', description: 'חפירה, הנחת קווים ותיקונים בשטח ציבורי', handler_ids: [handler.id], infra_chain: [infra5[0].id, infra5[1].id], role_entrepreneur: ent.data.id });
+      const ty = await ad.req('POST', '/api/admin/request-types', { name: 'עבודות בדרכים', description: 'חפירה, הנחת קווים ותיקונים בשטח ציבורי', handler_ids: [handler.id] /* מטפלים אוטומטיים בוטלו – השרת מתעלם */, infra_chain: [infra5[0].id, infra5[1].id], role_entrepreneur: ent.data.id });
       const meta = await new Client(b5).req('GET', '/api/public/apply-meta');
       const tKey = meta.data.types.find(t => t.name === 'עבודות בדרכים').key;
       rec('סוגי בקשות', 'סוג בקשה שהוגדר בלוח הבקרה מופיע בטופס הציבורי עם התיאור', ty.status === 201 && !!tKey && meta.data.types.find(t => t.key === tKey).description.includes('חפירה'));
@@ -726,9 +726,25 @@ class Client {
       rec('הגשה מהציבור', 'המשתמש נוצר עם התפקיד שהוגדר ליזם בסוג הבקשה', nu && nu.role_name === 'יזם – עבודות בדרכים' && nu.applicant_kind === 'entrepreneur');
       const rq5 = db5.prepare('SELECT * FROM requests WHERE id = ?').get(reqId5);
       const chain5 = db5.prepare('SELECT infra_body_id, seq FROM request_approvals WHERE request_id = ? ORDER BY seq').all(reqId5);
-      rec('הגשה מהציבור', 'הבקשה הוקצתה אוטומטית למטפל של הסוג, וגורמי התשתית נקבעו לפי הסדר שהוגדר', rq5.assignee_id === handler.id && chain5.map(c => c.infra_body_id).join() === [infra5[0].id, infra5[1].id].join());
+      {
+        const tm = meta.data.types.find(t => t.key === tKey);
+        const hist = db5.prepare("SELECT details FROM request_history WHERE request_id = ? AND action = 'גורמי התשתית נקבעו אוטומטית לפי סוג הבקשה'").get(reqId5);
+        rec('סנכרון גורמים', 'בבחירת סוג הבקשה בהגשה מוצגים הגורמים הקבועים, והם נכנסים לבקשה אוטומטית (ומתועדים בהיסטוריה)',
+          tm.bodies.join() === [infra5[0].name, infra5[1].name].join() && chain5.length === 2 && !!hist && hist.details.includes(infra5[0].name), JSON.stringify(tm.bodies));
+        // שינוי סוג בבקשה קיימת: מסתנכרן לגורמים של הסוג החדש, רק כל עוד אף גורם לא התחיל לטפל
+        const applIdS = db5.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(reqId5).applicant_id;
+        const s1 = seedReq(db5, applIdS, { status: 'submitted' });
+        const u1 = await ad.req('PUT', `/api/requests/${s1.id}`, { type: tKey });
+        const c1 = db5.prepare('SELECT infra_body_id FROM request_approvals WHERE request_id = ? ORDER BY seq').all(s1.id).map(x => x.infra_body_id);
+        const s2 = seedReq(db5, applIdS, { status: 'coordination' });
+        db5.prepare("INSERT INTO request_approvals (request_id, infra_body_id, seq, decision, decided_at) VALUES (?, ?, 1, 'approved', datetime('now'))").run(s2.id, infra5[2].id);
+        await ad.req('PUT', `/api/requests/${s2.id}`, { type: tKey });
+        const c2 = db5.prepare('SELECT infra_body_id FROM request_approvals WHERE request_id = ?').all(s2.id).map(x => x.infra_body_id);
+        rec('סנכרון גורמים', 'שינוי סוג בקשה מעדכן את הגורמים לגורמים הקבועים של הסוג החדש – אבל לא אחרי שגורם כבר החליט', u1.status === 200 && c1.join() === [infra5[0].id, infra5[1].id].join() && c2.join() === String(infra5[2].id), `${c1} | ${c2}`);
+      }
+      rec('הגשה מהציבור', 'אין מטפל אוטומטי (בוטל): הבקשה לא מוקצית מראש, וגורמי התשתית נקבעו לפי הסדר שהוגדר בסוג', rq5.assignee_id === null && chain5.map(c => c.infra_body_id).join() === [infra5[0].id, infra5[1].id].join());
       await new Promise(res => setTimeout(res, 600));
-      rec('הגשה מהציבור', 'אחראי המיפוי, המטפל ומנהל המערכת קיבלו דוא"ל והתראה על הבקשה החדשה', ['mapper@example.gov.il', 'handler@example.gov.il', 'admin@example.gov.il'].every(a => mails.some(m => m.to === a && m.body.includes('Subject:'))) && !!db5.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND text LIKE ?").get(mapper.id, '%' + ok.data.number + '%'));
+      rec('הגשה מהציבור', 'אחראי המיפוי ומנהל המערכת קיבלו דוא"ל והתראה על הבקשה החדשה (ולא "מטפל אוטומטי")', !mails.some(m => m.to === 'handler@example.gov.il') && ['mapper@example.gov.il', 'admin@example.gov.il'].every(a => mails.some(m => m.to === a && m.body.includes('Subject:'))) && !!db5.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND text LIKE ?").get(mapper.id, '%' + ok.data.number + '%'));
       rec('הגשה מהציבור', 'המגיש קיבל דוא"ל אישור קבלה עם מספר הבקשה', mails.some(m => m.to === 'israel@example.com'));
       // טופס משטרה: מוגבל
       const appl = new Client(b5, '10.60.0.1'); const al = await appl.login('ישראל ישראלי', APPLY_PW); appl.csrf = al.data.csrf;
