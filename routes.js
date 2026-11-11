@@ -121,14 +121,21 @@ route('POST', '/api/auth/logout', (req, res) => {
 });
 
 const loginTexts = () => ({ heading: getSetting('login.heading') || '', text: getSetting('login.text') || '' });
+// כפתור נגישות צף: הגדרות שמנהלים מלוח הבקרה (אפשרויות, צבע, צורה, גודל, צד)
+const A11Y_FEATURES = ['font', 'contrast', 'dark', 'gray', 'links', 'readable', 'spacing', 'motion', 'cursor', 'headings', 'guide'];
+const A11Y_DEFAULT = { enabled: true, features: A11Y_FEATURES, color: '#0B62B8', shape: 'circle', size: 'md', side: 'left', label: 'נגישות' };
+function a11yConfig() {
+  let c = {}; try { c = JSON.parse(getSetting('a11y.widget') || '{}'); } catch { /* */ }
+  return { ...A11Y_DEFAULT, ...c, features: Array.isArray(c.features) ? c.features.filter(f => A11Y_FEATURES.includes(f)) : A11Y_DEFAULT.features };
+}
 route('GET', '/api/auth/me', (req) => {
-  if (!req.user) return status(401, { error: 'לא מחובר', title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, login: loginTexts() });
+  if (!req.user) return status(401, { error: 'לא מחובר', title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, login: loginTexts(), a11y: a11yConfig() });
   const u = req.user;
   const unread = db.prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read = 0').get(u.id).c;
   const roleName = db.prepare('SELECT name FROM roles WHERE id = ?').get(u.role_id)?.name || '';
   const infraName = u.infra_body_id ? db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(u.infra_body_id)?.name || null : null;
   return { user: { ...publicUser(u), role_name: roleName, infra_name: infraName, is_sysadmin: isSysAdmin(req), can_assign_tasks: canAssignTasks(req) }, perms: permsList(req), csrf: req.session.csrf, prefs: JSON.parse(u.prefs || '{}'),
-    title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, login: loginTexts(), unread,
+    title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, login: loginTexts(), a11y: a11yConfig(), unread,
     meta: { types: typesMap(), typesActive: typesAll().filter(t => t.active).map(t => t.key), statuses: W.STATUSES,
       files: { allowed: up.allowedExt(), maxMb: Math.round(up.maxBytes() / 1048576) } } };
 });
@@ -920,10 +927,21 @@ route('GET', '/api/users/lookup', (req) => {
   return { items: (staffOnly ? rows.filter(u => !isPublicUser(u)) : rows).map(({ applicant_kind, ...u }) => ({ ...u, general: !!applicant_kind || PUBLIC_ROLE_NAMES.includes(u.role_name) })) };
 });
 route('GET', '/api/infra', (req) => { requireAuth(req); return { items: db.prepare('SELECT id, name, contact, active FROM infra_bodies ORDER BY name').all() }; });
+// משתמש בעל הרשאה פעיל (לא יזם / תושב/ת) – לאיש קשר ולשיוך לגורם תשתית
+function staffUser(id, what) {
+  const u = db.prepare('SELECT u.id, u.applicant_kind, r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ? AND u.active = 1').get(id);
+  if (!u) throw new sec.ValidationError(`${what}: המשתמש אינו פעיל`);
+  if (isPublicUser(u)) throw new sec.ValidationError(`${what}: אפשר לבחור רק משתמש בעל הרשאה (לא יזם או תושב/ת)`);
+  return u.id;
+}
 function contactUser(raw) {
   const id = v.id(raw, { name: 'איש קשר' });
-  if (id && !db.prepare('SELECT 1 FROM users WHERE id = ? AND active = 1').get(id)) throw new sec.ValidationError('איש הקשר אינו משתמש פעיל');
-  return id || null;
+  return id ? staffUser(id, 'איש קשר למשימות') : null;
+}
+function setMembers(bodyId, raw) {
+  const ids = raw.slice(0, 200).map(x => staffUser(v.id(x, { required: true, name: 'משתמש' }), 'משתמש משויך לגורם'));
+  db.prepare('UPDATE users SET infra_body_id = NULL WHERE infra_body_id = ?').run(bodyId);
+  for (const uid of ids) db.prepare('UPDATE users SET infra_body_id = ? WHERE id = ?').run(bodyId, uid);
 }
 
 // ---------------- ניהול: משתמשים ----------------
@@ -1096,7 +1114,7 @@ route('GET', '/api/admin/settings', (req) => {
     sla_regular_days: +getSetting('sla.regular_days'),
     org_name: getSetting('org.name'), system_title: getSetting('org.system_title'),
     req_prefix: getSetting('requests.prefix'), req_with_year: getSetting('requests.with_year') === '1', req_pad: +getSetting('requests.pad'),
-    mail: mailer.describe(), reminder_enabled: reminderSettings().enabled, reminder_days: reminderSettings().days, reminder_repeat_days: reminderSettings().repeat, govmap_token: getSetting('govmap.token') || '', govmap_env: !!config.govmapToken, guidelines: getSetting('approval.guidelines') || '', login_heading: getSetting('login.heading') || '', login_text: getSetting('login.text') || '', public_apply: getSetting('public.apply') !== '0',
+    a11y: a11yConfig(), a11y_features: A11Y_FEATURES, mail: mailer.describe(), reminder_enabled: reminderSettings().enabled, reminder_days: reminderSettings().days, reminder_repeat_days: reminderSettings().repeat, govmap_token: getSetting('govmap.token') || '', govmap_env: !!config.govmapToken, guidelines: getSetting('approval.guidelines') || '', login_heading: getSetting('login.heading') || '', login_text: getSetting('login.text') || '', public_apply: getSetting('public.apply') !== '0',
     req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'), docs_visibility: docsOwnOnly() ? 'own' : 'request',
   };
 });
@@ -1116,6 +1134,17 @@ route('PUT', '/api/admin/settings', (req) => {
   if (b.sla_regular_days !== undefined) setSetting('sla.regular_days', v.num(b.sla_regular_days, { min: 1, max: 365, name: 'ימי טיפול' }));
   if (b.org_name !== undefined) setSetting('org.name', v.str(b.org_name, { max: 100, required: true, name: 'שם הארגון' }));
   if (b.system_title !== undefined) setSetting('org.system_title', v.str(b.system_title, { max: 100, required: true, name: 'שם המערכת' }));
+  if (b.a11y !== undefined) {
+    const a = b.a11y; if (!a || typeof a !== 'object' || Array.isArray(a)) throw new sec.ValidationError('הגדרות נגישות לא תקינות');
+    const feats = Array.isArray(a.features) ? [...new Set(a.features)] : null;
+    if (!feats || feats.some(f => !A11Y_FEATURES.includes(f))) throw new sec.ValidationError('אפשרות נגישות לא מוכרת');
+    const color = String(a.color || ''); if (!/^#[0-9a-f]{6}$/i.test(color)) throw new sec.ValidationError('צבע הכפתור לא תקין');
+    setSetting('a11y.widget', JSON.stringify({ enabled: !!a.enabled, features: feats, color,
+      shape: v.oneOf(a.shape, ['circle', 'rounded', 'square'], { required: true, name: 'צורת הכפתור' }),
+      size: v.oneOf(a.size, ['sm', 'md', 'lg'], { required: true, name: 'גודל הכפתור' }),
+      side: v.oneOf(a.side, ['left', 'right'], { required: true, name: 'צד המסך' }),
+      label: v.str(a.label, { max: 30, name: 'כיתוב הכפתור' }) || 'נגישות' }));
+  }
   if (b.login_heading !== undefined) setSetting('login.heading', v.str(b.login_heading, { max: 120, name: 'כותרת מסך הכניסה' }) || '');
   if (b.login_text !== undefined) setSetting('login.text', v.str(b.login_text, { max: 600, name: 'תיאור במסך הכניסה' }) || '');
   if (b.reminder_enabled !== undefined) setSetting('reminder.enabled', b.reminder_enabled ? '1' : '0');
@@ -1142,9 +1171,15 @@ route('POST', '/api/admin/infra', (req) => {
   requirePerm(req, 'admin.roles', 'admin.settings');
   const name = v.str(req.body.name, { max: 100, required: true, name: 'שם גורם' });
   if (db.prepare('SELECT 1 FROM infra_bodies WHERE name = ?').get(name)) throw new sec.ValidationError('גורם בשם זה קיים');
-  const info = db.prepare('INSERT INTO infra_bodies (name, contact, contact_user_id) VALUES (?, ?, ?)').run(name, v.str(req.body.contact, { max: 200, name: 'איש קשר' }), contactUser(req.body.contact_user_id));
+  const id = tx(() => {
+    const info = db.prepare('INSERT INTO infra_bodies (name, contact, contact_user_id, active) VALUES (?, ?, ?, ?)').run(name, v.str(req.body.contact, { max: 200, name: 'איש קשר' }),
+      contactUser(req.body.contact_user_id), req.body.active === false ? 0 : 1);
+    const newId = Number(info.lastInsertRowid);
+    if (Array.isArray(req.body.member_ids)) setMembers(newId, req.body.member_ids);
+    return newId;
+  });
   audit(req, 'infra_created', { name });
-  return status(201, { id: Number(info.lastInsertRowid) });
+  return status(201, { id });
 });
 route('PUT', '/api/admin/infra/:id', (req) => {
   requirePerm(req, 'admin.roles', 'admin.settings');
@@ -1156,11 +1191,7 @@ route('PUT', '/api/admin/infra/:id', (req) => {
     db.prepare('UPDATE infra_bodies SET name = ?, contact = ?, contact_user_id = ?, active = ? WHERE id = ?').run(name, v.str(req.body.contact ?? b.contact, { max: 200, name: 'איש קשר' }),
       req.body.contact_user_id === undefined ? b.contact_user_id : contactUser(req.body.contact_user_id), req.body.active === undefined ? b.active : (req.body.active ? 1 : 0), b.id);
     // שיוך משתמשים לגורם (משתמש משויך יכול לתת חוות דעת בשם הגורם)
-    if (Array.isArray(req.body.member_ids)) {
-      const ids = req.body.member_ids.slice(0, 200).map(x => v.id(x, { required: true, name: 'משתמש' }));
-      db.prepare('UPDATE users SET infra_body_id = NULL WHERE infra_body_id = ?').run(b.id);
-      for (const uid of ids) db.prepare('UPDATE users SET infra_body_id = ? WHERE id = ?').run(b.id, uid);
-    }
+    if (Array.isArray(req.body.member_ids)) setMembers(b.id, req.body.member_ids);
   });
   audit(req, 'infra_updated', { id: b.id, name });
   return { ok: true };

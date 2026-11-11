@@ -785,6 +785,29 @@ class Client {
         rec('הקצאה', 'גורם מטפל רק מתוך המשתמשים בעלי הרשאה – הקצאה ליזם/תושב/ת נחסמת גם בשרת', !lk.some(u => ['יזם', 'תושב/ת'].includes(u.role_name)) && lk.some(u => u.id === mapper.id)
           && toPublic.status === 400 && toStaff.status === 200, `${toPublic.status} ${toStaff.status}`);
       }
+      // גורמי תשתית: איש קשר ומשויכים – רק משתמשים בעלי הרשאה; הוספה עם כל הפרטים
+      {
+        const applId = db5.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(reqId5).applicant_id;
+        const c1 = await ad.req('PUT', `/api/admin/infra/${infra5[2].id}`, { contact_user_id: applId });
+        const c2 = await ad.req('PUT', `/api/admin/infra/${infra5[2].id}`, { member_ids: [applId] });
+        const nb = await ad.req('POST', '/api/admin/infra', { name: 'גורם חדש לבדיקה', contact: '08-1234567', contact_user_id: mapper.id, member_ids: [mapper.id], active: true });
+        const row = nb.status === 201 ? db5.prepare('SELECT contact_user_id FROM infra_bodies WHERE id = ?').get(nb.data.id) : {};
+        const mem = db5.prepare('SELECT infra_body_id FROM users WHERE id = ?').get(mapper.id).infra_body_id;
+        const nbBad = await ad.req('POST', '/api/admin/infra', { name: 'גורם עם תושב', member_ids: [applId] });
+        rec('גורמי תשתית', 'איש קשר ומשויכים לגורם – רק משתמשים בעלי הרשאה (גם בשרת); הוספה שומרת את כל הפרטים', c1.status === 400 && c2.status === 400 && nb.status === 201 && row.contact_user_id === mapper.id && mem === nb.data.id
+          && nbBad.status === 400 && !db5.prepare("SELECT 1 FROM infra_bodies WHERE name = 'גורם עם תושב'").get(), [c1.status, c2.status, nb.status, nbBad.status].join(','));
+        await ad.req('PUT', `/api/admin/users/${mapper.id}`, { no_infra: true });
+      }
+      // כפתור נגישות: הגדרות מלוח הבקרה, עם אימות
+      {
+        const bad1 = await ad.req('PUT', '/api/admin/settings', { a11y: { enabled: true, features: ['font', 'hack'], color: '#112233', shape: 'circle', size: 'md', side: 'left' } });
+        const bad2 = await ad.req('PUT', '/api/admin/settings', { a11y: { enabled: true, features: ['font'], color: 'red;background:url(x)', shape: 'circle', size: 'md', side: 'left' } });
+        const bad3 = await ad.req('PUT', '/api/admin/settings', { a11y: { enabled: true, features: ['font'], color: '#112233', shape: 'star', size: 'md', side: 'left' } });
+        const ok = await ad.req('PUT', '/api/admin/settings', { a11y: { enabled: true, features: ['font', 'contrast', 'links'], color: '#aa3300', shape: 'square', size: 'lg', side: 'right', label: 'נגישות לכולם' } });
+        const pub = await (await fetch(b5 + '/api/auth/me', { headers: { 'X-Requested-With': 'fetch' } })).json();
+        rec('נגישות', 'הגדרות כפתור הנגישות נשמרות מלוח הבקרה ומגיעות גם למסך הכניסה; ערכים לא תקינים נדחים', bad1.status === 400 && bad2.status === 400 && bad3.status === 400 && ok.status === 200
+          && pub.a11y && pub.a11y.shape === 'square' && pub.a11y.size === 'lg' && pub.a11y.color === '#aa3300' && pub.a11y.features.join() === 'font,contrast,links', JSON.stringify(pub.a11y));
+      }
       // איש קשר בטופס המשטרה: שם מלא ופלאפון בנפרד
       {
         const pd = JSON.parse(db5.prepare('SELECT data FROM request_police WHERE request_id = ?').get(reqId5).data);

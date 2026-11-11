@@ -307,6 +307,8 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       const noReset = !(await page.$('text=קישור איפוס'));
       await page.click('.user-folder[open] .act-btn >> nth=0'); await page.waitForSelector('.act-list:not([hidden])');
       const menu = await page.evaluate(() => ({ items: [...document.querySelectorAll('.act-list:not([hidden]) [role=menuitem]')].map(b => b.textContent), focus: document.activeElement.getAttribute('role'), exp: document.querySelector('.act-btn[aria-expanded=true]') !== null }));
+      const onTop = await page.evaluate(() => { const it = document.querySelector('.act-list:not([hidden]) [role=menuitem]'); const r = it.getBoundingClientRect(); const t = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!t && (t === it || it.contains(t)); });
+      rec('משתמשים', 'תפריט הפעולות (⋮) נפתח ונראה על המסך (לא נחתך בתוך הטבלה)', onTop);
       await page.keyboard.press('ArrowDown'); await page.keyboard.press('Escape');
       const closed = await page.evaluate(() => !document.querySelector('.act-list:not([hidden])') && document.activeElement.classList.contains('act-btn'));
       rec('משתמשים', 'הפעולות נפתחות מסמל (⋮) כתפריט נגיש, ואין "קישור איפוס"', noReset && menu.items.includes('עריכת משתמש') && menu.items.includes('שינוי סיסמה') && !menu.items.some(t => /איפוס/.test(t)) && menu.focus === 'menuitem' && menu.exp && closed, JSON.stringify(menu));
@@ -314,6 +316,55 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('משתמשים', 'בחירה בתפריט פותחת את הפעולה (עריכת משתמש)', (await page.inputValue('dialog[open] input[name=full_name]')).length > 0);
       await page.keyboard.press('Escape');
       await page.screenshot({ path: path.join(SHOTS, 'users-folders.png'), fullPage: true });
+    }
+
+    // גורמי תשתית: "הוספה" פותחת חלון מילוי כמו עריכה, ורק משתמשים בעלי הרשאה
+    {
+      await page.goto(base + '/#/admin/roles?tab=infra'); await page.click('button >> text=הוספת גורם תשתית'); await page.waitForSelector('dialog[open] input[name=name]');
+      const dlg = await page.evaluate(() => { const d = document.querySelector('dialog[open]'); return { title: d.querySelector('h2').textContent, hasContact: !!d.querySelector('select[name=contact_user_id]'), hasMembers: !!d.querySelector('.req-pick-list'), active: !!d.querySelector('input[name=active]'),
+        opts: [...d.querySelectorAll('select[name=contact_user_id] option')].slice(1).map(o => o.textContent), members: [...d.querySelectorAll('.req-pick-list label')].map(l => l.textContent) }; });
+      rec('גורמי תשתית', '"הוספה" פותחת חלון מילוי כמו בעריכה (שם, איש קשר, פרטי קשר, פעיל, משויכים)', dlg.title === 'הוספת גורם תשתית' && dlg.hasContact && dlg.hasMembers && dlg.active, JSON.stringify(dlg).slice(0, 160));
+      rec('גורמי תשתית', 'באיש קשר ובמשויכים מופיעים רק משתמשים בעלי הרשאה', dlg.opts.length > 0 && !dlg.opts.some(t => /\((יזם|תושב\/ת)\)$/.test(t)) && !dlg.members.some(t => /יזם$|תושב\/ת$/.test(t)), dlg.opts.join(' | '));
+      await page.fill('dialog[open] input[name=name]', 'גורם בדיקה חדש'); await page.selectOption('dialog[open] select[name=contact_user_id]', { index: 1 });
+      await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForSelector('text=גורם בדיקה חדש');
+      rec('גורמי תשתית', 'גורם חדש נשמר עם איש הקשר שנבחר', (await page.textContent('main')).includes('גורם בדיקה חדש'));
+    }
+    // כפתור נגישות צף
+    {
+      const ctxA = await browser.newContext({ viewport: { width: 1280, height: 800 } }); const pa = await ctxA.newPage();
+      await pa.goto(base + '/'); await pa.waitForSelector('.a11y-fab:not(.a11y-preview)');
+      const fab0 = await pa.$eval('.a11y-fab:not(.a11y-preview)', b => { const r = b.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, label: b.getAttribute('aria-label') }; });
+      await pa.click('.a11y-fab:not(.a11y-preview)'); await pa.waitForSelector('.a11y-panel');
+      const opts = await pa.$$eval('.a11y-panel .a11y-opt', x => x.map(b => b.textContent));
+      await pa.click('.a11y-panel .a11y-opt >> text=ניגודיות גבוהה'); await pa.click('.a11y-step[aria-label="הגדלת טקסט"]'); await pa.click('.a11y-step[aria-label="הגדלת טקסט"]');
+      const st = await pa.evaluate(() => ({ contrast: document.documentElement.hasAttribute('data-a11y-contrast'), scale: getComputedStyle(document.documentElement).getPropertyValue('--a11y-scale').trim(), fs: parseFloat(getComputedStyle(document.documentElement).fontSize), pressed: document.querySelector('.a11y-opt[data-f=contrast]').getAttribute('aria-pressed') }));
+      await pa.screenshot({ path: path.join(SHOTS, 'a11y-login.png') });
+      await pa.keyboard.press('Escape');
+      const back = await pa.evaluate(() => !document.querySelector('.a11y-panel') && document.activeElement.classList.contains('a11y-fab'));
+      rec('נגישות', 'במסך הכניסה יש כפתור נגישות צף שפותח תפריט אפשרויות (ניגודיות, הגדלת טקסט ועוד)', opts.length >= 8 && st.contrast && st.pressed === 'true' && st.scale === '1.2' && st.fs > 16 && back, JSON.stringify({ opts: opts.length, ...st }));
+      await pa.mouse.move(fab0.x + fab0.w / 2, fab0.y + fab0.w / 2); await pa.mouse.down(); await pa.mouse.move(fab0.x + fab0.w / 2 + 300, fab0.y + fab0.w / 2 - 250, { steps: 8 }); await pa.mouse.up();
+      const moved = await pa.$eval('.a11y-fab:not(.a11y-preview)', b => { const r = b.getBoundingClientRect(); return { x: r.x, y: r.y }; });
+      await pa.reload(); await pa.waitForSelector('.a11y-fab:not(.a11y-preview)');
+      const after = await pa.$eval('.a11y-fab:not(.a11y-preview)', b => { const r = b.getBoundingClientRect(); return { x: r.x, y: r.y }; });
+      const kept = await pa.evaluate(() => document.documentElement.hasAttribute('data-a11y-contrast'));
+      rec('נגישות', 'את הכפתור אפשר לגרור למקום אחר במסך, והמיקום וההגדרות נשמרים', Math.abs(moved.x - fab0.x - 300) < 8 && Math.abs(moved.y - fab0.y + 250) < 8 && Math.abs(after.x - moved.x) < 3 && Math.abs(after.y - moved.y) < 3 && kept, JSON.stringify({ fab0, moved, after }));
+      await pa.focus('.a11y-fab:not(.a11y-preview)'); await pa.keyboard.press('Alt+ArrowUp');
+      const kb = await pa.$eval('.a11y-fab:not(.a11y-preview)', b => b.getBoundingClientRect().y);
+      rec('נגישות', 'הזזת הכפתור גם במקלדת (Alt+חצים)', Math.abs(kb - (after.y - 24)) < 3, `${after.y}→${kb}`);
+      await login(pa); await pa.waitForSelector('#gsearch');
+      rec('נגישות', 'כפתור הנגישות מופיע גם בתוך המערכת אחרי ההתחברות', await pa.isVisible('.a11y-fab:not(.a11y-preview)'));
+      await pa.goto(base + '/#/admin/settings'); await pa.waitForSelector('[name=a11y_shape]');
+      await pa.selectOption('[name=a11y_shape]', 'square'); await pa.selectOption('[name=a11y_size]', 'lg');
+      await pa.$eval('[name=a11y_color]', (i) => { i.value = '#aa3300'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+      await pa.uncheck('input[name=af][value=guide]');
+      await pa.click('form:has([name=a11y_shape]) button[type=submit]'); await pa.waitForTimeout(400);
+      const fab1 = await pa.$eval('.a11y-fab:not(.a11y-preview)', b => ({ cls: b.className, w: b.getBoundingClientRect().width, bg: getComputedStyle(b).backgroundColor }));
+      await pa.click('.a11y-fab:not(.a11y-preview)'); await pa.waitForSelector('.a11y-panel');
+      const opts2 = await pa.$$eval('.a11y-panel .a11y-opt', x => x.map(b => b.textContent));
+      await pa.keyboard.press('Escape');
+      rec('נגישות', 'מלוח הבקרה מנהלים את האפשרויות, הצבע, הצורה והגודל של הכפתור', /shape-square/.test(fab1.cls) && /size-lg/.test(fab1.cls) && fab1.w === 68 && fab1.bg === 'rgb(170, 51, 0)' && !opts2.includes('סרגל קריאה'), JSON.stringify(fab1));
+      await pa.evaluate(() => { try { localStorage.removeItem('a11y-prefs'); localStorage.removeItem('a11y-pos'); } catch { /* */ } });
+      await ctxA.close();
     }
 
     // XSS בדסקטופ + בתצוגת רשימה

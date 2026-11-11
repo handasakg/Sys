@@ -1710,7 +1710,8 @@
     const wrap = h('div', { class: 'act-menu' });
     const btn = h('button', { class: 'btn ghost icon-btn act-btn', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': label, title: label }, icon('more'));
     const list = h('div', { class: 'act-list', role: 'menu', hidden: true });
-    const close = (focusBtn) => { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside, true); window.removeEventListener('scroll', onScroll, true); window.removeEventListener('resize', onScroll); if (focusBtn) btn.focus(); };
+    // כשהתפריט פתוח הוא עובר לשורש העמוד: כך שום מסגרת (טבלה עם גלילה, אפקט זכוכית) לא חותכת או מזיזה אותו
+    const close = (focusBtn) => { list.hidden = true; if (list.parentNode !== wrap) wrap.append(list); window.removeEventListener('hashchange', onHash); btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside, true); window.removeEventListener('scroll', onScroll, true); window.removeEventListener('resize', onScroll); if (focusBtn) btn.focus(); };
     // מיקום קבוע ביחס למסך, כדי שהתפריט לא ייחתך בתוך טבלה עם גלילה; בגלילה הוא נע יחד עם הכפתור
     const place = () => {
       const r0 = btn.getBoundingClientRect(); const lh = list.offsetHeight || 200; const lw = list.offsetWidth || 220;
@@ -1718,13 +1719,14 @@
       const top = window.innerHeight - r0.bottom < lh + 12 ? Math.max(8, r0.top - lh - 4) : r0.bottom + 4;
       list.style.setProperty('top', top + 'px'); list.style.setProperty('left', Math.min(Math.max(8, r0.left), window.innerWidth - lw - 8) + 'px');
     };
+    const onHash = () => close(false);
     const onScroll = (e) => { if (e && e.target && e.target.nodeType === 1 && list.contains(e.target)) return; place(); };
     const outside = (e) => { if (!wrap.contains(e.target)) close(false); };
     for (const it of items.filter(Boolean)) list.append(h('button', { type: 'button', role: 'menuitem', class: it.danger ? 'danger' : '', tabindex: '-1', onclick: () => { close(false); it.run(); } }, icon(it.icon), it.label));
     btn.addEventListener('click', () => {
       if (!list.hidden) return close(true);
-      document.querySelectorAll('.act-list:not([hidden])').forEach(x => { x.hidden = true; });
-      list.hidden = false; btn.setAttribute('aria-expanded', 'true');
+      document.querySelectorAll('body > .act-list:not([hidden])').forEach(x => x.dispatchEvent(new Event('act-close')));
+      document.body.append(list); list.hidden = false; btn.setAttribute('aria-expanded', 'true'); window.addEventListener('hashchange', onHash);
       place();
       window.addEventListener('scroll', onScroll, true); window.addEventListener('resize', onScroll);
       list.querySelector('[role=menuitem]').focus();
@@ -1737,6 +1739,7 @@
       else if (e.key === 'Home') { e.preventDefault(); its[0].focus(); } else if (e.key === 'End') { e.preventDefault(); its[its.length - 1].focus(); }
       else if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); close(true); }
     });
+    list.addEventListener('act-close', () => close(false));
     wrap.append(btn, list);
     return wrap;
   }
@@ -1888,32 +1891,36 @@
   // ---------- ניהול: הגדרות, סוגי קבצים, גורמי תשתית ----------
 
   async function infraTab(main, box) {
-    const [{ items }, users] = await Promise.all([api('GET', '/api/admin/infra'), api('GET', '/api/users/lookup')]);
+    // רק משתמשים בעלי הרשאה (לא יזם / תושב/ת) – לאיש קשר ולשיוך לגורם
+    const [{ items }, users] = await Promise.all([api('GET', '/api/admin/infra'), api('GET', '/api/users/lookup?staff=1')]);
     const reload = () => viewAdminRoles(main, { tab: 'infra' });
     const err = errBox();
-    const add = h('form', { class: 'toolbar', novalidate: true }, h('div', { class: 'field grow' }, h('label', { for: 'nib' }, 'גורם חדש'), inp('name', { id: 'nib', maxlength: 100, required: true })),
-      h('div', { class: 'field grow' }, h('label', { for: 'nic' }, 'איש קשר'), inp('contact', { id: 'nic', maxlength: 200 })), h('button', { class: 'btn primary', type: 'submit' }, icon('plus'), 'הוספה'));
-    add.addEventListener('submit', async (e) => {
-      e.preventDefault(); if (!validate(add, err)) return;
-      try { await api('POST', '/api/admin/infra', formData(add)); toast('הגורם נוסף'); reload(); } catch (ex) { showErr(err, ex.message); }
-    });
+    const add = h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', type: 'button', onclick: () => editDialog(null) }, icon('plus'), 'הוספת גורם תשתית'));
+    // אותו חלון להוספה ולעריכה
     function editDialog(b) {
+      const isNew = !b; b = b || { name: '', contact: '', contact_user_id: null, active: 1, members: [] };
       const dErr = errBox();
+      const memberSearch = h('input', { type: 'search', id: 'mem-search', placeholder: 'חיפוש משתמש', maxlength: 60, autocomplete: 'off' });
+      const memberList = h('div', { class: 'req-pick-list', role: 'group', 'aria-label': 'משתמשים בעלי הרשאה' }, users.items.map(u => h('label', { class: 'check', 'data-q': `${u.full_name} ${u.role_name}`.toLowerCase() },
+        h('input', { type: 'checkbox', name: 'm' + u.id, value: u.id, checked: b.members.some(x => x.id === u.id) }),
+        u.full_name, h('span', { class: 'small muted' }, ` · ${u.role_name}${u.infra_body_id && u.infra_body_id !== b.id ? ' (משויך כעת לגורם אחר)' : ''}`))));
+      memberSearch.addEventListener('input', () => { const q = memberSearch.value.trim().toLowerCase(); for (const l of memberList.children) l.hidden = !!q && !l.dataset.q.includes(q); });
       const form = h('form', { novalidate: true }, dErr,
         field('שם הגורם', inp('name', { value: b.name, maxlength: 100 }), { required: true }),
         field('איש קשר למשימות', sel('contact_user_id', [['', 'לא הוגדר'], ...users.items.map(u => [u.id, `${u.full_name} (${u.role_name})`])], b.contact_user_id || ''),
-          { hint: 'משימה שמוקצית לגורם הזה נשלחת לאיש הקשר, בהודעה במערכת ובאימייל.' }),
+          { hint: 'רק משתמשים בעלי הרשאה. משימה שמוקצית לגורם נשלחת לאיש הקשר, בהודעה במערכת ובאימייל.' }),
         field('פרטי קשר נוספים (טלפון וכו׳)', inp('contact', { value: b.contact || '', maxlength: 200 })),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'active', checked: !!b.active }), 'גורם פעיל (מופיע בבחירת גורמים לבקשה)'),
         h('fieldset', null, h('legend', null, 'משתמשים שמשויכים לגורם'),
-          h('p', { class: 'small muted' }, 'משתמש משויך רואה את הבקשות שהגורם נדרש להן ונותן חוות דעת בשמו. משתמש יכול להיות משויך לגורם אחד.'),
-          users.items.map(u => h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'm' + u.id, value: u.id, checked: b.members.some(x => x.id === u.id) }),
-            u.full_name, h('span', { class: 'small muted' }, ` · ${u.role_name}${u.infra_body_id && u.infra_body_id !== b.id ? ' (משויך כעת לגורם אחר)' : ''}`)))));
-      const m = modal(`עריכת ${b.name}`, form, [h('button', { class: 'btn primary', type: 'button', onclick: () => form.requestSubmit() }, 'שמירה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
+          h('p', { class: 'small muted' }, 'רק משתמשים בעלי הרשאה. משתמש משויך רואה את הבקשות שהגורם נדרש להן ונותן חוות דעת בשמו. משתמש יכול להיות משויך לגורם אחד.'),
+          users.items.length > 8 ? [h('label', { for: 'mem-search', class: 'sr-only' }, 'חיפוש משתמש'), memberSearch] : null,
+          users.items.length ? memberList : h('p', { class: 'muted' }, 'אין עדיין משתמשים בעלי הרשאה.')));
+      const m = modal(isNew ? 'הוספת גורם תשתית' : `עריכת ${b.name}`, form, [h('button', { class: 'btn primary', type: 'button', onclick: () => form.requestSubmit() }, isNew ? 'הוספה' : 'שמירה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
       form.addEventListener('submit', async (e) => {
         e.preventDefault(); if (!validate(form, dErr)) return;
         const member_ids = [...form.querySelectorAll('input[name^="m"]:checked')].map(i => Number(i.value));
-        try { await api('PUT', `/api/admin/infra/${b.id}`, { name: form.elements.name.value, contact: form.contact.value, contact_user_id: form.contact_user_id.value ? Number(form.contact_user_id.value) : null, active: form.active.checked, member_ids }); m.close(); toast('הגורם עודכן'); reload(); } catch (ex) { showErr(dErr, ex.message); }
+        const data = { name: form.elements.name.value, contact: form.contact.value, contact_user_id: form.contact_user_id.value ? Number(form.contact_user_id.value) : null, active: form.active.checked, member_ids };
+        try { await api(isNew ? 'POST' : 'PUT', isNew ? '/api/admin/infra' : `/api/admin/infra/${b.id}`, data); m.close(); toast(isNew ? 'הגורם נוסף' : 'הגורם עודכן'); reload(); } catch (ex) { showErr(dErr, ex.message); }
       });
     }
     box.replaceChildren(h('p', { class: 'muted' }, 'הגופים שנותנים חוות דעת על בקשות (מים, חשמל, תקשורת…). כאן מוסיפים, עורכים ומשייכים אליהם משתמשים.'), err, add,
@@ -2038,6 +2045,35 @@
       e.preventDefault(); if (!validate(loginForm, lgErr)) return;
       try { await api('PUT', '/api/admin/settings', { login_heading: loginForm.login_heading.value, login_text: loginForm.login_text.value }); await refreshMe(); toast('מסך הכניסה עודכן'); } catch (ex) { showErr(lgErr, ex.message); }
     });
+    // כפתור נגישות: אפשרויות, עיצוב, צורה, גודל, צד
+    const A11Y_LABELS = { font: 'הגדלת טקסט', contrast: 'ניגודיות גבוהה', dark: 'ניגודיות הפוכה', gray: 'גווני אפור', links: 'הדגשת קישורים', headings: 'הדגשת כותרות', readable: 'גופן קריא', spacing: 'ריווח טקסט', motion: 'עצירת אנימציות', cursor: 'סמן גדול', guide: 'סרגל קריאה' };
+    const ac = s.a11y || {};
+    const axErr = errBox();
+    const axPreview = h('span', { class: 'a11y-fab a11y-preview', 'aria-hidden': 'true' }, (() => { const v0 = svg('svg', { viewBox: '0 0 24 24' }, svg('path', { d: 'M12 2.5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM4 8.5l8 1.5 8-1.5M12 10v5M12 15l-3.5 6.5M12 15l3.5 6.5' })); return v0; })());
+    const axForm = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'כפתור נגישות'), axErr,
+      h('p', { class: 'muted' }, 'כפתור צף במסך הכניסה ובתוך המערכת. כל משתמש יכול לגרור אותו למקום אחר במסך, והבחירות שלו נשמרות בדפדפן שלו.'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'a11y_enabled', checked: ac.enabled !== false }), 'הצגת כפתור הנגישות'),
+      h('fieldset', null, h('legend', null, 'האפשרויות בתפריט'),
+        h('div', { class: 'a11y-feat-grid' }, (s.a11y_features || Object.keys(A11Y_LABELS)).map(f => h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'af', value: f, checked: (ac.features || []).includes(f) }), A11Y_LABELS[f] || f)))),
+      h('div', { class: 'row' },
+        field('צבע', inp('a11y_color', { type: 'color', value: ac.color || '#0B62B8' })),
+        field('צורה', sel('a11y_shape', [['circle', 'עיגול'], ['rounded', 'ריבוע מעוגל'], ['square', 'ריבוע']], ac.shape || 'circle')),
+        field('גודל', sel('a11y_size', [['sm', 'קטן'], ['md', 'בינוני'], ['lg', 'גדול']], ac.size || 'md'))),
+      h('div', { class: 'row' },
+        field('צד במסך (ברירת מחדל)', sel('a11y_side', [['left', 'שמאל למטה'], ['right', 'ימין למטה']], ac.side || 'left')),
+        field('כיתוב (לקוראי מסך)', inp('a11y_label', { value: ac.label || 'נגישות', maxlength: 30 }))),
+      h('div', { class: 'a11y-preview-row' }, h('span', { class: 'small muted' }, 'תצוגה מקדימה:'), axPreview),
+      h('button', { class: 'btn primary', type: 'submit' }, 'שמירה'));
+    const axData = () => ({ enabled: axForm.a11y_enabled.checked, features: [...axForm.querySelectorAll('input[name=af]:checked')].map(i => i.value),
+      color: axForm.a11y_color.value, shape: axForm.a11y_shape.value, size: axForm.a11y_size.value, side: axForm.a11y_side.value, label: axForm.a11y_label.value.trim() || 'נגישות' });
+    const axPrev = () => { const d0 = axData(); axPreview.className = `a11y-fab a11y-preview shape-${d0.shape} size-${d0.size}`; axPreview.style.setProperty('--a11y-color', d0.color); };
+    axForm.addEventListener('input', axPrev); axForm.addEventListener('change', axPrev); axPrev();
+    axForm.addEventListener('submit', async (e) => {
+      e.preventDefault(); axErr.hidden = true;
+      const d0 = axData();
+      if (d0.enabled && !d0.features.length) return showErr(axErr, 'יש לבחור לפחות אפשרות אחת, או לכבות את הכפתור.');
+      try { await api('PUT', '/api/admin/settings', { a11y: d0 }); S.a11y = d0; a11yWidget.mount(d0); toast('הגדרות כפתור הנגישות נשמרו'); } catch (ex) { showErr(axErr, ex.message); }
+    });
     // דוא"ל: מצב ההגדרה ואימייל בדיקה
     const ml = s.mail || {};
     const mlResult = h('div', { class: 'mail-result', role: 'status', 'aria-live': 'polite' });
@@ -2152,7 +2188,7 @@
           if (!(await confirmDlg('חזרה ללוגו ברירת המחדל', 'להסיר את הלוגו שהועלה ולחזור ללוגו ברירת המחדל?', 'חזרה לברירת המחדל', true))) return;
           try { await api('DELETE', '/api/admin/logo'); await refreshMe(); toast('חזרנו ללוגו ברירת המחדל'); renderShell(); route(); } catch (ex) { toast(ex.message, true); }
         } }, 'חזרה ללוגו ברירת המחדל') : null), lStatus);
-    main.replaceChildren(pageHead('הגדרות וקבצים', 'גורמי התשתית עברו למסך "תפקידים והרשאות", בלשונית משלהם.'), h('div', { class: 'grid two' }, h('div', null, logoPanel, files), h('div', null, general, mlForm, rmForm, loginForm, gmForm, numbering, guide)));
+    main.replaceChildren(pageHead('הגדרות וקבצים', 'גורמי התשתית עברו למסך "תפקידים והרשאות", בלשונית משלהם.'), h('div', { class: 'grid two' }, h('div', null, logoPanel, files), h('div', null, general, axForm, mlForm, rmForm, loginForm, gmForm, numbering, guide)));
   }
   async function refreshMe() {
     const me = await api('GET', '/api/auth/me');
@@ -2195,16 +2231,137 @@
   }
 
   // ---------- אתחול ----------
+  // ---------- כפתור נגישות צף (במסך הכניסה ובתוך המערכת) ----------
+  // ההגדרות (אפשרויות, צבע, צורה, גודל, צד) מנוהלות בהגדרות וקבצים. הבחירות של כל משתמש נשמרות בדפדפן שלו.
+  const a11yWidget = (() => {
+    const FEATS = {
+      font: { label: 'הגדלת טקסט', icon: 'M4 18L9 6l5 12M5.6 14h6.8M16 10h6M19 7v6' },
+      contrast: { label: 'ניגודיות גבוהה', icon: 'M12 3a9 9 0 1 0 0 18zM12 3a9 9 0 0 1 0 18' },
+      dark: { label: 'ניגודיות הפוכה', icon: 'M20 14A8 8 0 1 1 10 4a6 6 0 0 0 10 10z' },
+      gray: { label: 'גווני אפור', icon: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18M3 12h9' },
+      links: { label: 'הדגשת קישורים', icon: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1' },
+      headings: { label: 'הדגשת כותרות', icon: 'M5 4v16M13 4v16M5 12h8M17 8l3-2v14' },
+      readable: { label: 'גופן קריא', icon: 'M6 20h12M12 4v16M7 4h10' },
+      spacing: { label: 'ריווח טקסט', icon: 'M4 6h16M4 12h16M4 18h16M2 3v18M22 3v18' },
+      motion: { label: 'עצירת אנימציות', icon: 'M8 5h3v14H8zM13 5h3v14h-3z' },
+      cursor: { label: 'סמן גדול', icon: 'M5 3l14 8-6 2-3 6z' },
+      guide: { label: 'סרגל קריאה', icon: 'M3 10h18v4H3zM3 6h18M3 18h18' },
+    };
+    const KEY = 'a11y-prefs', POS = 'a11y-pos';
+    let cfg = null, prefs = {}, btn = null, panel = null, guideEl = null;
+    const load = () => { try { prefs = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch { prefs = {}; } };
+    const save = () => { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* */ } };
+    const ic = (d) => { const s0 = svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' }, svg('path', { d })); return s0; };
+    function apply() {
+      const el = document.documentElement; const on = (f) => !!(cfg && cfg.enabled && cfg.features.includes(f) && prefs[f]);
+      const scale = on('font') ? Math.min(1.6, Math.max(1, Number(prefs.font) || 1)) : 1;
+      if (scale > 1) { el.dataset.a11yFont = ''; el.style.setProperty('--a11y-scale', String(scale)); } else { delete el.dataset.a11yFont; el.style.removeProperty('--a11y-scale'); }
+      for (const f of ['contrast', 'dark', 'gray', 'links', 'headings', 'readable', 'spacing', 'motion', 'cursor']) { const k = 'a11y' + f[0].toUpperCase() + f.slice(1); if (on(f)) el.dataset[k] = ''; else delete el.dataset[k]; }
+      // סרגל קריאה: פס שעוקב אחרי העכבר
+      if (on('guide') && !guideEl) { guideEl = h('div', { class: 'a11y-guide', 'aria-hidden': 'true' }); document.body.append(guideEl); document.addEventListener('pointermove', moveGuide); }
+      if (!on('guide') && guideEl) { guideEl.remove(); guideEl = null; document.removeEventListener('pointermove', moveGuide); }
+      if (panel) for (const b of panel.querySelectorAll('[data-f]')) { const f = b.dataset.f; b.setAttribute('aria-pressed', String(f === 'font' ? scale > 1 : on(f))); }
+      if (panel) { const fl = panel.querySelector('.a11y-font-level'); if (fl) fl.textContent = Math.round(scale * 100) + '%'; }
+    }
+    const moveGuide = (e) => { if (guideEl) guideEl.style.setProperty('top', (e.clientY - 18) + 'px'); };
+    // מיקום שנשמר (אחרי גרירה), אחרת לפי הצד שהוגדר
+    function place() {
+      if (!btn) return;
+      let p = null; try { p = JSON.parse(localStorage.getItem(POS) || 'null'); } catch { /* */ }
+      for (const k of ['left', 'right', 'top', 'bottom']) btn.style.removeProperty(k);
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+        const w = btn.offsetWidth || 56, hh = btn.offsetHeight || 56;
+        btn.style.setProperty('left', Math.min(Math.max(4, p.x * window.innerWidth), window.innerWidth - w - 4) + 'px');
+        btn.style.setProperty('top', Math.min(Math.max(4, p.y * window.innerHeight), window.innerHeight - hh - 4) + 'px');
+      } else { btn.style.setProperty(cfg.side === 'right' ? 'right' : 'left', '16px'); btn.style.setProperty('bottom', '16px'); }
+    }
+    function openPanel() {
+      if (panel) return closePanel();
+      const feats = cfg.features.filter(f => FEATS[f]);
+      const toggle = (f) => h('button', { type: 'button', class: 'a11y-opt', 'data-f': f, 'aria-pressed': 'false', onclick: () => { prefs[f] = !prefs[f]; if (f === 'contrast' && prefs[f]) prefs.dark = false; if (f === 'dark' && prefs[f]) prefs.contrast = false; save(); apply(); } }, ic(FEATS[f].icon), h('span', null, FEATS[f].label));
+      const fontRow = feats.includes('font') ? h('div', { class: 'a11y-font', role: 'group', 'aria-label': 'גודל טקסט' },
+        h('button', { type: 'button', class: 'a11y-step', 'aria-label': 'הקטנת טקסט', onclick: () => { prefs.font = Math.max(1, Math.round(((Number(prefs.font) || 1) - 0.1) * 10) / 10); save(); apply(); } }, 'א-'),
+        h('span', { class: 'a11y-font-level', 'aria-live': 'polite' }, '100%'),
+        h('button', { type: 'button', class: 'a11y-step', 'aria-label': 'הגדלת טקסט', onclick: () => { prefs.font = Math.min(1.6, Math.round(((Number(prefs.font) || 1) + 0.1) * 10) / 10); save(); apply(); } }, 'א+'),
+        h('span', { class: 'a11y-font-lbl' }, 'גודל טקסט')) : null;
+      panel = h('div', { class: 'a11y-panel', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'a11y-title', tabindex: '-1' },
+        h('div', { class: 'a11y-head' }, h('h2', { id: 'a11y-title' }, 'אפשרויות נגישות'), h('button', { type: 'button', class: 'a11y-x', 'aria-label': 'סגירת תפריט הנגישות', onclick: () => closePanel(true) }, icon('x'))),
+        fontRow,
+        h('div', { class: 'a11y-grid' }, feats.filter(f => f !== 'font').map(toggle)),
+        h('div', { class: 'a11y-foot' },
+          h('button', { type: 'button', class: 'a11y-reset', onclick: () => { prefs = {}; save(); apply(); } }, 'איפוס הגדרות'),
+          h('button', { type: 'button', class: 'a11y-reset', onclick: () => { try { localStorage.removeItem(POS); } catch { /* */ } place(); } }, 'החזרת הכפתור למקום'),
+          h('a', { href: '/accessibility.html', target: '_blank', rel: 'noopener' }, 'הצהרת נגישות')));
+      panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closePanel(true); } });
+      document.body.append(panel); positionPanel(); apply();
+      btn.setAttribute('aria-expanded', 'true');
+      (panel.querySelector('button') || panel).focus();
+      setTimeout(() => document.addEventListener('pointerdown', outside, true));
+    }
+    const outside = (e) => { if (panel && !panel.contains(e.target) && !btn.contains(e.target)) closePanel(false); };
+    function positionPanel() {
+      if (!panel) return;
+      const r = btn.getBoundingClientRect(); const pw = panel.offsetWidth, ph = panel.offsetHeight;
+      let left = r.left + r.width / 2 > window.innerWidth / 2 ? r.right - pw : r.left;
+      let top = r.top - ph - 10; if (top < 8) top = Math.min(r.bottom + 10, window.innerHeight - ph - 8);
+      panel.style.setProperty('left', Math.min(Math.max(8, left), window.innerWidth - pw - 8) + 'px'); panel.style.setProperty('top', Math.max(8, top) + 'px');
+    }
+    function closePanel(focusBtn) {
+      if (!panel) return; panel.remove(); panel = null; btn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('pointerdown', outside, true); if (focusBtn) btn.focus();
+    }
+    // גרירה: מזיזים בלחיצה ארוכה/גרירה; לחיצה רגילה פותחת. מקלדת: Alt+חצים מזיזים
+    function draggable() {
+      let start = null, moved = false;
+      btn.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; start = { x: e.clientX, y: e.clientY, r: btn.getBoundingClientRect() }; moved = false; btn.setPointerCapture(e.pointerId); });
+      const moveTo = (e) => {
+        const dx = e.clientX - start.x, dy = e.clientY - start.y;
+        if (!moved && Math.hypot(dx, dy) < 6) return; moved = true; btn.classList.add('dragging');
+        const x = Math.min(Math.max(4, start.r.left + dx), window.innerWidth - start.r.width - 4), y = Math.min(Math.max(4, start.r.top + dy), window.innerHeight - start.r.height - 4);
+        for (const k of ['right', 'bottom']) btn.style.removeProperty(k);
+        btn.style.setProperty('left', x + 'px'); btn.style.setProperty('top', y + 'px'); positionPanel();
+      };
+      btn.addEventListener('pointermove', (e) => { if (start) moveTo(e); });
+      const end = (e) => {
+        if (!start) return; if (e && e.type === 'pointerup') moveTo(e); // המיקום הסופי, גם אם תנועה אחרונה אוחדה
+        start = null; btn.classList.remove('dragging');
+        if (moved) { const r = btn.getBoundingClientRect(); try { localStorage.setItem(POS, JSON.stringify({ x: r.left / window.innerWidth, y: r.top / window.innerHeight })); } catch { /* */ } }
+      };
+      btn.addEventListener('pointerup', end); btn.addEventListener('pointercancel', end);
+      btn.addEventListener('click', (e) => { if (moved) { e.preventDefault(); moved = false; return; } openPanel(); });
+      btn.addEventListener('keydown', (e) => {
+        if (!e.altKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+        e.preventDefault(); const r = btn.getBoundingClientRect(); const d = 24;
+        const x = r.left + (e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0), y = r.top + (e.key === 'ArrowUp' ? -d : e.key === 'ArrowDown' ? d : 0);
+        try { localStorage.setItem(POS, JSON.stringify({ x: x / window.innerWidth, y: y / window.innerHeight })); } catch { /* */ } place(); positionPanel();
+      });
+    }
+    function mount(c) {
+      cfg = c || null; load();
+      if (btn) { btn.remove(); btn = null; } closePanel(false);
+      apply();
+      if (!cfg || !cfg.enabled || !cfg.features.length) return;
+      btn = h('button', { type: 'button', class: `a11y-fab shape-${cfg.shape} size-${cfg.size}`, 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+        'aria-label': `${cfg.label || 'נגישות'} – אפשרויות נגישות (אפשר לגרור, או Alt+חצים להזזה)`, title: cfg.label || 'נגישות' },
+        ic('M12 2.5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM4 8.5l8 1.5 8-1.5M12 10v5M12 15l-3.5 6.5M12 15l3.5 6.5'));
+      btn.style.setProperty('--a11y-color', cfg.color || '#0B62B8');
+      document.body.append(btn); place(); draggable();
+      if (!a11yWidget.rz) { a11yWidget.rz = true; window.addEventListener('resize', () => { place(); positionPanel(); }); }
+    }
+    return { mount, apply };
+  })();
+
   async function boot() {
     try {
       const me = await api('GET', '/api/auth/me');
-      S.me = me.user; S.csrf = me.csrf; S.perms = new Set(me.perms); S.meta = me.meta; S.prefs = me.prefs || {}; S.title = me.title; S.org = me.org; S.unread = me.unread; S.logo = me.logo; S.login = me.login || S.login;
+      S.me = me.user; S.csrf = me.csrf; S.perms = new Set(me.perms); S.meta = me.meta; S.prefs = me.prefs || {}; S.title = me.title; S.org = me.org; S.unread = me.unread; S.logo = me.logo; S.login = me.login || S.login; S.a11y = me.a11y;
       applyPrefs(S.prefs);
     } catch (ex) {
       S.me = null;
-      try { const r = await fetch('/api/auth/me', { headers: { 'X-Requested-With': 'fetch' } }); const j = await r.json(); if (j.title) { S.title = j.title; S.org = j.org; S.logo = j.logo; S.login = j.login || S.login; } } catch { /* */ }
+      try { const r = await fetch('/api/auth/me', { headers: { 'X-Requested-With': 'fetch' } }); const j = await r.json(); if (j.title) { S.title = j.title; S.org = j.org; S.logo = j.logo; S.login = j.login || S.login; S.a11y = j.a11y; } } catch { /* */ }
     }
     shell = null;
+    a11yWidget.mount(S.a11y);
     await route();
   }
   window.addEventListener('hashchange', route);
