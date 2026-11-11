@@ -547,8 +547,10 @@ route('POST', '/api/requests/:id/assign', (req) => {
   requirePerm(req, 'requests.assign');
   const r = loadRequest(req.params.id);
   const uid = v.id(req.body.assignee_id, { required: true, name: 'גורם מטפל' });
-  const u = db.prepare('SELECT id, full_name FROM users WHERE id = ? AND active = 1').get(uid);
+  const u = db.prepare('SELECT u.id, u.full_name, u.applicant_kind, r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ? AND u.active = 1').get(uid);
   if (!u) throw new sec.ValidationError('משתמש לא קיים');
+  // גורם מטפל רק מתוך המשתמשים בעלי ההרשאה (לא יזם / תושב/ת)
+  if (isPublicUser(u)) throw new sec.ValidationError('אפשר להקצות רק למשתמש בעל הרשאה (לא יזם או תושב/ת)');
   db.prepare('UPDATE requests SET assignee_id = ?, updated_at = ? WHERE id = ?').run(uid, nowIso(), r.id);
   history(r.id, req.user.id, 'הוקצתה לטיפול', u.full_name);
   notify(uid, `הוקצתה אליך בקשה ${r.number} – ${r.title}`, `#/requests/${r.id}`);
@@ -907,9 +909,15 @@ route('POST', '/api/notifications/read', (req) => {
   db.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?').run(req.user.id);
   return { ok: true };
 });
+// משתמשים כלליים = תפקיד "יזם" או "תושב/ת", או מי שנרשם דרך "הגשת בקשה" (גם עם קבוצת הרשאות ציבורית אחרת).
+// כל השאר = משתמשים בעלי הרשאה
+const PUBLIC_ROLE_NAMES = ['יזם', 'תושב/ת'];
+const isPublicUser = (u) => PUBLIC_ROLE_NAMES.includes(u.role_name) || !!u.applicant_kind;
 route('GET', '/api/users/lookup', (req) => {
   requirePerm(req, 'requests.assign', 'admin.users', 'admin.settings');
-  return { items: db.prepare('SELECT u.id, u.full_name, u.department, u.infra_body_id, r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.active = 1 ORDER BY u.full_name').all() };
+  const staffOnly = req.query.staff === '1';
+  const rows = db.prepare('SELECT u.id, u.full_name, u.department, u.infra_body_id, u.applicant_kind, r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.active = 1 ORDER BY u.full_name').all();
+  return { items: (staffOnly ? rows.filter(u => !isPublicUser(u)) : rows).map(({ applicant_kind, ...u }) => ({ ...u, general: !!applicant_kind || PUBLIC_ROLE_NAMES.includes(u.role_name) })) };
 });
 route('GET', '/api/infra', (req) => { requireAuth(req); return { items: db.prepare('SELECT id, name, contact, active FROM infra_bodies ORDER BY name').all() }; });
 function contactUser(raw) {

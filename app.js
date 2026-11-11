@@ -45,6 +45,9 @@
     home2: 'M3 10l9-7 9 7M5 9v11h14V9',
     building: 'M4 21V4h10v17M14 9h6v12M7 8h2M7 12h2M7 16h2M17 13h1M17 17h1',
     lock: 'M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4',
+    more: 'M12 5.5v.01M12 12v.01M12 18.5v.01',
+    ruler: 'M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l2 2M13 7l2 2',
+    clipboard: 'M9 4h6v3H9zM7 5H5v16h14V5h-2M8 12h8M8 16h5',
     eye: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
     pin: 'M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21zM12 12.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
     external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
@@ -1361,9 +1364,10 @@
     });
   }
   async function assignDialog(r, reload) {
-    const { items } = await api('GET', '/api/users/lookup');
+    // רק משתמשים בעלי הרשאה (לא יזם / תושב/ת)
+    const { items } = await api('GET', '/api/users/lookup?staff=1');
     const err = errBox();
-    const form = h('form', { novalidate: true }, err, field('גורם מטפל', sel('assignee_id', [['', 'בחרו משתמש'], ...items.map(u => [u.id, `${u.full_name} (${u.role_name})`])], r.assignee_id), { required: true }));
+    const form = h('form', { novalidate: true }, err, field('גורם מטפל', sel('assignee_id', [['', 'בחרו משתמש בעל הרשאה'], ...items.map(u => [u.id, `${u.full_name} (${u.role_name})`])], r.assignee_id), { required: true }));
     const m = modal('הקצאת גורם מטפל', form, [h('button', { class: 'btn primary', type: 'button', onclick: () => form.requestSubmit() }, 'הקצאה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); if (!validate(form, err)) return;
@@ -1686,25 +1690,96 @@
   }
 
   // ---------- ניהול: משתמשים ----------
+  // תפקידים: סמל וצבע קבועים לכל תפקיד, כדי שיהיה קל לזהות במבט
+  const PUBLIC_ROLES = ['יזם', 'תושב/ת'];
+  const isPublicRole = (name) => PUBLIC_ROLES.includes(name);
+  function roleLook(name, id) {
+    const n = String(name || '');
+    if (/מנהל/.test(n)) return { icon: 'shield', tone: 1 };
+    if (/רכז/.test(n)) return { icon: 'clipboard', tone: 2 };
+    if (/מהנדס|מאשר/.test(n)) return { icon: 'ruler', tone: 3 };
+    if (/גורם תשתית/.test(n)) return { icon: 'building', tone: 4 };
+    if (n === 'יזם') return { icon: 'badge', tone: 5 };
+    if (/תושב/.test(n)) return { icon: 'home2', tone: 6 };
+    if (/מבקש/.test(n)) return { icon: 'user', tone: 7 };
+    return { icon: 'user', tone: 8 + ((Number(id) || 0) % 3) };
+  }
+  const roleChip = (name, id) => { const l = roleLook(name, id); return h('span', { class: `role-chip tone-${l.tone}` }, h('span', { class: 'role-ic', 'aria-hidden': 'true' }, icon(l.icon)), name || '—'); };
+  // תפריט פעולות שנפתח מסמל (⋮): נגיש למקלדת – חצים, Escape סוגר ומחזיר את הפוקוס
+  function actionMenu(label, items) {
+    const wrap = h('div', { class: 'act-menu' });
+    const btn = h('button', { class: 'btn ghost icon-btn act-btn', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': label, title: label }, icon('more'));
+    const list = h('div', { class: 'act-list', role: 'menu', hidden: true });
+    const close = (focusBtn) => { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside, true); window.removeEventListener('scroll', onScroll, true); window.removeEventListener('resize', onScroll); if (focusBtn) btn.focus(); };
+    // מיקום קבוע ביחס למסך, כדי שהתפריט לא ייחתך בתוך טבלה עם גלילה; בגלילה הוא נע יחד עם הכפתור
+    const place = () => {
+      const r0 = btn.getBoundingClientRect(); const lh = list.offsetHeight || 200; const lw = list.offsetWidth || 220;
+      if (r0.bottom < 0 || r0.top > window.innerHeight) return close(false);
+      const top = window.innerHeight - r0.bottom < lh + 12 ? Math.max(8, r0.top - lh - 4) : r0.bottom + 4;
+      list.style.setProperty('top', top + 'px'); list.style.setProperty('left', Math.min(Math.max(8, r0.left), window.innerWidth - lw - 8) + 'px');
+    };
+    const onScroll = (e) => { if (e && e.target && e.target.nodeType === 1 && list.contains(e.target)) return; place(); };
+    const outside = (e) => { if (!wrap.contains(e.target)) close(false); };
+    for (const it of items.filter(Boolean)) list.append(h('button', { type: 'button', role: 'menuitem', class: it.danger ? 'danger' : '', tabindex: '-1', onclick: () => { close(false); it.run(); } }, icon(it.icon), it.label));
+    btn.addEventListener('click', () => {
+      if (!list.hidden) return close(true);
+      document.querySelectorAll('.act-list:not([hidden])').forEach(x => { x.hidden = true; });
+      list.hidden = false; btn.setAttribute('aria-expanded', 'true');
+      place();
+      window.addEventListener('scroll', onScroll, true); window.addEventListener('resize', onScroll);
+      list.querySelector('[role=menuitem]').focus();
+      setTimeout(() => document.addEventListener('click', outside, true));
+    });
+    list.addEventListener('keydown', (e) => {
+      const its = [...list.querySelectorAll('[role=menuitem]')]; const i = its.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') { e.preventDefault(); its[(i + 1) % its.length].focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); its[(i - 1 + its.length) % its.length].focus(); }
+      else if (e.key === 'Home') { e.preventDefault(); its[0].focus(); } else if (e.key === 'End') { e.preventDefault(); its[its.length - 1].focus(); }
+      else if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); close(true); }
+    });
+    wrap.append(btn, list);
+    return wrap;
+  }
+
   async function viewAdminUsers(main) {
     const [{ items, roles, requests }, infra] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/infra')]);
     const roleName = Object.fromEntries(roles.map(r => [r.id, r.name]));
     const reload = () => viewAdminUsers(main);
+    // כלליים: תפקיד יזם / תושב/ת, או מי שנרשם דרך "הגשת בקשה". כל השאר – בעלי הרשאה
+    const isGeneral = (u) => isPublicRole(roleName[u.role_id]) || !!u.applicant_kind;
+    const staff = items.filter(u => !isGeneral(u));
+    const general = items.filter(isGeneral);
+    const cols = (withInfra) => [
+      { label: 'שם', render: u => { const l = roleLook(roleName[u.role_id], u.role_id); return h('span', { class: 'user-cell' },
+        h('span', { class: `user-av tone-${l.tone}`, 'aria-hidden': 'true' }, icon(l.icon)),
+        h('span', null, h('strong', { class: 'user-name' }, u.full_name), h('span', { class: 'small muted ltr user-login' }, u.username))); } },
+      { label: 'תפקיד', render: u => h('span', null, roleChip(roleName[u.role_id], u.role_id), u.perm_grant.length || u.perm_deny.length ? h('span', { class: 'small muted' }, ' +התאמות') : null) },
+      withInfra ? { label: 'גורם תשתית', render: u => (infra.items.find(b => b.id === u.infra_body_id) || {}).name || '—' } : { label: 'אימייל', render: u => u.email ? h('span', { class: 'ltr small' }, u.email) : '—' },
+      { label: 'בקשות', render: u => u.requests.length ? h('span', { class: 'ltr small' }, u.requests.slice(0, 3).map(x => x.number).join(', ') + (u.requests.length > 3 ? ` +${u.requests.length - 3}` : '')) : '—' },
+      { label: 'מצב', render: u => !u.active ? h('span', { class: 'chip st-rejected' }, 'מושבת') : u.locked ? h('span', { class: 'chip st-returned' }, 'נעול') : h('span', { class: 'chip st-approved' }, 'פעיל') },
+      { label: 'כניסה אחרונה', render: u => fmtDateTime(u.last_login) },
+      { label: 'פעולות', cls: 'act-col', render: u => actionMenu(`פעולות עבור ${u.full_name}`, [
+        { icon: 'edit', label: 'עריכת משתמש', run: () => userDialog(u, roles, infra.items, reload, requests) },
+        { icon: 'key', label: 'שינוי סיסמה', run: () => passwordDialog(u) },
+        u.locked ? { icon: 'lock', label: 'שחרור נעילה', run: async () => { await api('POST', `/api/admin/users/${u.id}/unlock`, {}); toast('החשבון שוחרר'); reload(); } } : null,
+        { icon: 'out', label: 'ניתוק כל ההתחברויות', run: async () => { await api('POST', `/api/admin/users/${u.id}/logout`, {}); toast('כל ההתחברויות של המשתמש נותקו'); } },
+      ]) },
+    ];
+    // שתי תיקיות שנפתחות ונסגרות (המצב נזכר בדפדפן)
+    const folder = (key, title, sub, list, withInfra, defOpen) => {
+      let open = defOpen; try { const v0 = localStorage.getItem('users-folder:' + key); if (v0 !== null) open = v0 === '1'; } catch { /* */ }
+      const det = h('details', { class: 'doc-folder user-folder' }); det.open = open;
+      det.addEventListener('toggle', () => { try { localStorage.setItem('users-folder:' + key, det.open ? '1' : '0'); } catch { /* */ } });
+      det.append(h('summary', null,
+        h('span', { class: 'df-ic', 'aria-hidden': 'true' }, icon('folder')), h('span', { class: 'df-ic open', 'aria-hidden': 'true' }, icon('folderOpen')),
+        h('span', { class: 'df-num' }, title), h('span', { class: 'df-title' }, sub), h('span', { class: 'df-count' }, `${list.length} משתמשים`)),
+        h('div', { class: 'df-body' }, list.length ? tableOf(cols(withInfra), list, { caption: title }) : h('p', { class: 'muted' }, 'אין משתמשים בתיקייה הזו.')));
+      return det;
+    };
     main.replaceChildren(pageHead('משתמשים', `${items.length} משתמשים. משתמש חדש יתבקש להחליף סיסמה בכניסה הראשונה.`, h('button', { class: 'btn primary', type: 'button', onclick: () => userDialog(null, roles, infra.items, reload, requests) }, icon('plus'), 'משתמש חדש')),
-      tableOf([
-        { label: 'שם', render: u => h('span', null, u.full_name, h('div', { class: 'small muted ltr' }, u.username)) },
-        { label: 'תפקיד', render: u => roleName[u.role_id] + (u.perm_grant.length || u.perm_deny.length ? ' (+התאמות)' : '') },
-        { label: 'גורם תשתית', render: u => (infra.items.find(b => b.id === u.infra_body_id) || {}).name || '—' },
-        { label: 'בקשות', render: u => u.requests.length ? h('span', { class: 'ltr small' }, u.requests.slice(0, 3).map(x => x.number).join(', ') + (u.requests.length > 3 ? ` +${u.requests.length - 3}` : '')) : '—' },
-        { label: 'מצב', render: u => !u.active ? h('span', { class: 'chip st-rejected' }, 'מושבת') : u.locked ? h('span', { class: 'chip st-returned' }, 'נעול') : h('span', { class: 'chip st-approved' }, 'פעיל') },
-        { label: 'כניסה אחרונה', render: u => fmtDateTime(u.last_login) },
-        { label: 'פעולות', render: u => h('span', { style: { display: 'flex', gap: '6px', 'flex-wrap': 'wrap' } },
-          h('button', { class: 'btn sm', type: 'button', onclick: () => userDialog(u, roles, infra.items, reload, requests) }, 'עריכה'),
-          h('button', { class: 'btn sm', type: 'button', onclick: () => passwordDialog(u) }, 'שינוי סיסמה'),
-          h('button', { class: 'btn sm', type: 'button', onclick: () => resetLink(u) }, 'קישור איפוס'),
-          u.locked ? h('button', { class: 'btn sm', type: 'button', onclick: async () => { await api('POST', `/api/admin/users/${u.id}/unlock`, {}); toast('החשבון שוחרר'); reload(); } }, 'שחרור נעילה') : null,
-          h('button', { class: 'btn sm', type: 'button', onclick: async () => { await api('POST', `/api/admin/users/${u.id}/logout`, {}); toast('כל ההתחברויות של המשתמש נותקו'); } }, 'ניתוק')) },
-      ], items, { caption: 'משתמשים' }));
+      h('div', { class: 'doc-groups' },
+        folder('staff', 'משתמשים בעלי הרשאה', 'כל התפקידים פרט ליזם ותושב/ת', staff, true, true),
+        folder('general', 'משתמשים כלליים', 'יזמים ותושבים שנרשמו בהגשת בקשה', general, false, false)));
   }
   function passwordDialog(u) {
     const err = errBox();
@@ -1722,14 +1797,6 @@
       if (pw1.value !== pw2.value) { pw2.setAttribute('aria-invalid', 'true'); pw2.focus(); return showErr(err, 'הסיסמאות אינן זהות.'); }
       try { await api('POST', `/api/admin/users/${u.id}/password`, { password: pw1.value, must_change: form.must_change.checked }); m.close(); toast(`הסיסמה של ${u.full_name} עודכנה`); } catch (ex) { showErr(err, ex.message); }
     });
-  }
-  async function resetLink(u) {
-    try {
-      const r = await api('POST', `/api/admin/users/${u.id}/reset-link`, {});
-      const input = h('input', { type: 'text', readonly: true, value: r.link, dir: 'ltr', id: 'rlink' });
-      const m = modal('קישור איפוס סיסמה', h('div', null, h('p', null, `שלחו את הקישור ל${u.full_name} בערוץ מאובטח. הקישור חד-פעמי ותקף ${r.expiresMinutes} דקות.`), field('קישור', input)),
-        [h('button', { class: 'btn primary', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(r.link); toast('הקישור הועתק'); } catch { input.select(); } } }, 'העתקה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'סגירה')]);
-    } catch (ex) { toast(ex.message, true); }
   }
   async function userDialog(u, roles, infra, done, requests = []) {
     const perms = can('admin.roles') ? (await api('GET', '/api/admin/permissions')).items : [];

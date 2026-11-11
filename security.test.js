@@ -776,6 +776,15 @@ class Client {
         rec('מיקום', 'עמוד המפה מורשה לטעון רק את GovMap ורק בתוך האתר עצמו; שאר האתר נשאר חסום', mh.status === 200 && /script-src 'self' https:\/\/www\.govmap\.gov\.il/.test(csp) && /frame-ancestors 'self'/.test(csp) && mh.headers.get('x-frame-options') === 'SAMEORIGIN'
           && !/govmap/.test(mainCsp) && /frame-ancestors 'none'/.test(mainCsp), csp.slice(0, 90));
       }
+      // הקצאה: רק משתמשים בעלי הרשאה
+      {
+        const applId = db5.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(reqId5).applicant_id;
+        const lk = (await ad.req('GET', '/api/users/lookup?staff=1')).data.items;
+        const toPublic = await ad.req('POST', `/api/requests/${reqId5}/assign`, { assignee_id: applId });
+        const toStaff = await ad.req('POST', `/api/requests/${reqId5}/assign`, { assignee_id: mapper.id });
+        rec('הקצאה', 'גורם מטפל רק מתוך המשתמשים בעלי הרשאה – הקצאה ליזם/תושב/ת נחסמת גם בשרת', !lk.some(u => ['יזם', 'תושב/ת'].includes(u.role_name)) && lk.some(u => u.id === mapper.id)
+          && toPublic.status === 400 && toStaff.status === 200, `${toPublic.status} ${toStaff.status}`);
+      }
       // איש קשר בטופס המשטרה: שם מלא ופלאפון בנפרד
       {
         const pd = JSON.parse(db5.prepare('SELECT data FROM request_police WHERE request_id = ?').get(reqId5).data);

@@ -293,6 +293,29 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     const closedBack = await page.evaluate(() => !document.querySelector('dialog[open]') && document.activeElement.classList.contains('primary'));
     rec('נגישות', 'חלון קופץ: פוקוס נכנס, נשאר בפנים, נסגר ב-Esc ומחזיר פוקוס', inDlg && labelled && trapped && closedBack, JSON.stringify({ inDlg, labelled, trapped, closedBack }));
 
+    // משתמשים: שתי תיקיות, צבע וסמל לתפקיד, פעולות בתפריט (⋮) בלי "קישור איפוס"
+    {
+      await page.evaluate(() => { try { localStorage.removeItem('users-folder:staff'); localStorage.removeItem('users-folder:general'); } catch { /* */ } });
+      await page.goto(base + '/#/admin/users'); await page.waitForSelector('.user-folder');
+      const fold = await page.evaluate(() => [...document.querySelectorAll('.user-folder')].map(d => ({ t: d.querySelector('.df-num').textContent, open: d.open, roles: [...d.querySelectorAll('.role-chip')].map(c => c.textContent) })));
+      rec('משתמשים', 'שתי תיקיות: "משתמשים בעלי הרשאה" (כל התפקידים פרט ליזם ותושב/ת) ו"משתמשים כלליים"', fold.length === 2 && fold[0].t === 'משתמשים בעלי הרשאה' && fold[1].t === 'משתמשים כלליים'
+        && fold[0].roles.length > 0 && !fold[0].roles.some(r => r === 'יזם' || r === 'תושב/ת') && fold[1].roles.every(r => r === 'יזם' || r === 'תושב/ת'), JSON.stringify(fold));
+      const look = await page.evaluate(() => { const chips = [...document.querySelectorAll('.user-folder .role-chip')]; const by = {}; for (const c of chips) by[c.textContent] = getComputedStyle(c).color;
+        const nm = document.querySelector('.user-name'); return { colors: by, icons: chips.every(c => c.querySelector('svg')), bold: Number(getComputedStyle(nm).fontWeight) >= 700 }; });
+      const distinct = new Set(Object.values(look.colors)).size === Object.keys(look.colors).length;
+      rec('משתמשים', 'ליד כל תפקיד יש סמל, לכל תפקיד צבע משלו, והשמות מודגשים', look.icons && look.bold && distinct && Object.keys(look.colors).length >= 2, JSON.stringify(look));
+      const noReset = !(await page.$('text=קישור איפוס'));
+      await page.click('.user-folder[open] .act-btn >> nth=0'); await page.waitForSelector('.act-list:not([hidden])');
+      const menu = await page.evaluate(() => ({ items: [...document.querySelectorAll('.act-list:not([hidden]) [role=menuitem]')].map(b => b.textContent), focus: document.activeElement.getAttribute('role'), exp: document.querySelector('.act-btn[aria-expanded=true]') !== null }));
+      await page.keyboard.press('ArrowDown'); await page.keyboard.press('Escape');
+      const closed = await page.evaluate(() => !document.querySelector('.act-list:not([hidden])') && document.activeElement.classList.contains('act-btn'));
+      rec('משתמשים', 'הפעולות נפתחות מסמל (⋮) כתפריט נגיש, ואין "קישור איפוס"', noReset && menu.items.includes('עריכת משתמש') && menu.items.includes('שינוי סיסמה') && !menu.items.some(t => /איפוס/.test(t)) && menu.focus === 'menuitem' && menu.exp && closed, JSON.stringify(menu));
+      await page.click('.user-folder[open] .act-btn >> nth=0'); await page.click('.act-list:not([hidden]) [role=menuitem] >> text=עריכת משתמש'); await page.waitForSelector('dialog[open] input[name=full_name]');
+      rec('משתמשים', 'בחירה בתפריט פותחת את הפעולה (עריכת משתמש)', (await page.inputValue('dialog[open] input[name=full_name]')).length > 0);
+      await page.keyboard.press('Escape');
+      await page.screenshot({ path: path.join(SHOTS, 'users-folders.png'), fullPage: true });
+    }
+
     // XSS בדסקטופ + בתצוגת רשימה
     await page.goto(base + `/#/requests/${reqs[3]}`); await page.waitForSelector('.req-title');
     const shown = await page.textContent('.req-title');
@@ -590,6 +613,12 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       const fitq = await mob.evaluate(() => { const i = document.getElementById('fq'); const cs = getComputedStyle(i); const c = document.createElement('canvas').getContext('2d'); c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`; return { ph: i.placeholder, need: c.measureText(i.placeholder).width, room: i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) }; });
       rec('כל הבקשות', 'במכשיר נייד טקסט החיפוש מוצג עד הסוף (לא נחתך)', fitq.ph.length > 3 && fitq.need <= fitq.room, JSON.stringify(fitq));
       await mc.close();
+      // הקצאת גורם מטפל: רק משתמשים בעלי הרשאה
+      await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('[role=tab]'); await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
+      await mp.click('.details-with-map dd button >> nth=0'); await mp.waitForSelector('dialog[open] select[name=assignee_id]');
+      const asOpts = await mp.$$eval('dialog[open] select[name=assignee_id] option', o => o.slice(1).map(x => x.textContent));
+      rec('הקצאה', 'בהקצאת גורם מטפל מוצגים רק משתמשים בעלי הרשאה (בלי יזם או תושב/ת)', asOpts.length > 0 && !asOpts.some(t => /\((יזם|תושב\/ת)\)$/.test(t)) && !asOpts.some(t => t.startsWith('רונית אברהם')), asOpts.join(' | '));
+      await mp.keyboard.press('Escape');
       // החזרה לתיקון: בחירה למי מחזירים
       await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('[role=tab]'); await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
       await mp.click('.req-head button >> text=החזרה לתיקון'); await mp.waitForSelector('dialog[open] [name=return_to]');

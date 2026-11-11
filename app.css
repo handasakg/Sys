@@ -755,3 +755,29 @@ dialog.viewer-dlg { width: min(1100px, calc(100vw - 24px)); max-width: none; }
 .env-table th, .env-table td { border: 1px solid var(--rule); padding: 5px 8px; text-align: start; vertical-align: top; }
 .env-table th { background: var(--surface-2); width: 1%; white-space: nowrap; font-weight: 500; }
 .env-table td[dir=ltr] { text-align: right; }
+
+/* תפקידים: צבע וסמל לכל תפקיד */
+:root { --tone-1: #6D3FC0; --tone-2: #0B62B8; --tone-3: #0E7C7B; --tone-4: #B45309; --tone-5: #A16207; --tone-6: #2E7D32; --tone-7: #475569; --tone-8: #BE185D; --tone-9: #4338CA; --tone-10: #0F766E; }
+:root[data-mode="dark"], :root[data-theme="night"] { --tone-1: #B79CF2; --tone-2: #7EB6F2; --tone-3: #6FD3D1; --tone-4: #F5B26B; --tone-5: #E7C35A; --tone-6: #86D08A; --tone-7: #B4C0D0; --tone-8: #F28DBB; --tone-9: #A5A8F5; --tone-10: #6ED4C6; }
+.tone-1 { --tone: var(--tone-1); } .tone-2 { --tone: var(--tone-2); } .tone-3 { --tone: var(--tone-3); } .tone-4 { --tone: var(--tone-4); } .tone-5 { --tone: var(--tone-5); }
+.tone-6 { --tone: var(--tone-6); } .tone-7 { --tone: var(--tone-7); } .tone-8 { --tone: var(--tone-8); } .tone-9 { --tone: var(--tone-9); } .tone-10 { --tone: var(--tone-10); }
+.role-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px; border-radius: 999px; font-size: .86rem; font-weight: 650; white-space: nowrap;
+  color: var(--tone); background: color-mix(in srgb, var(--tone) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent); }
+.role-chip .role-ic { display: inline-flex; } .role-chip svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; }
+.user-cell { display: inline-flex; align-items: center; gap: 10px; }
+.user-av { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--tone); color: var(--surface); }
+.user-av svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; }
+.user-name { display: block; font-weight: 750; font-size: 1rem; }
+.user-login { display: block; }
+.user-folder .df-num { font-size: 1.05rem; }
+/* תפריט פעולות (⋮) */
+.act-menu { position: relative; display: inline-block; }
+.act-btn { min-width: 40px; min-height: 40px; }
+.act-btn svg { width: 22px; height: 22px; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; fill: none; }
+.act-list { position: fixed; z-index: 60; min-width: 210px; padding: 6px; border-radius: 12px; background: var(--surface); border: 1px solid var(--rule); box-shadow: 0 12px 30px rgba(0,0,0,.18); display: flex; flex-direction: column; gap: 2px; }
+.act-list[hidden] { display: none; }
+.act-list [role=menuitem] { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 10px; border: 0; border-radius: 8px; background: none; color: var(--ink); font: inherit; text-align: start; cursor: pointer; }
+.act-list [role=menuitem]:hover, .act-list [role=menuitem]:focus-visible { background: var(--accent-soft); outline: none; }
+.act-list [role=menuitem] svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; flex: none; }
+.user-folder .df-body { overflow: visible; }
+.user-folder { overflow: visible; }
