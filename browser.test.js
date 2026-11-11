@@ -43,6 +43,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     const infra = (await call('GET', '/api/infra')).items;
     await call('POST', `/api/requests/${reqs[0]}/approvals`, { infra_body_ids: infra.slice(0, 4).map(b => b.id) });
     await call('POST', `/api/requests/${reqs[0]}/status`, { status: 'coordination' });
+    await call('PUT', '/api/admin/settings', { govmap_token: 'test-token' });
     await call('POST', '/api/tasks', { title: 'סיור שטח עם נציג התאגיד', request_id: reqs[0], assignee_id: eng.id, priority: 'גבוהה', start_date: '2026-11-12', due_date: '2026-11-20' });
     await ctx0.close();
 
@@ -337,9 +338,11 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     for (const p of PAGES) { await page.goto(base + '/' + p); await page.waitForTimeout(200); for (const h of await page.evaluate(() => [...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')))) hrefs.add(h); }
     const broken = [];
     for (const h of hrefs) {
-      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?)?|tasks(\?mine=1)?|reports|documents|appearance|account|admin\/(users|roles|types|settings|audit|backups)|forgot|apply\?kind=(resident|entrepreneur))$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
+      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?)?|tasks(\?mine=1)?|reports|documents(\?tab=(open|done))?|appearance|account|admin\/(users|roles|types|settings|audit|backups)|forgot|apply\?kind=(resident|entrepreneur))$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
       if (h === '#main') continue;
-      const url = new URL(h, base + '/'); const st = (await ctx.request.get(url.href)).status();
+      const url = new URL(h, base + '/');
+      if (url.origin !== base) { out.links.push({ href: h, status: 'external' }); if (!/^https:\/\/(www\.)?(gov\.il|govmap\.gov\.il)\//.test(url.href)) broken.push(`${h}:unexpected-external`); continue; } // אין אינטרנט בסביבת הבדיקה
+      const st = (await ctx.request.get(url.href)).status();
       out.links.push({ href: h, status: st }); if (st >= 400) broken.push(`${h}:${st}`);
     }
     rec('קישורים', `${hrefs.size} קישורים/משאבים נבדקו, אין שבורים`, broken.length === 0, broken.join(', '));
@@ -387,9 +390,16 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       await sctx.close();
     }
 
+    // GovMap מדומה: בסביבת הבדיקה אין אינטרנט, אז הסקריפט של GovMap מוחלף בגרסה שמממשת את אותו API
+    const GOVMAP_MOCK = `window.govmap = { events: { CLICK: 'click', EXTENT_CHANGE: 'extent' }, geocodeType: { FullResult: 1 },
+      createMap(id, o) { const d = document.getElementById(id); d.style.background = '#cfe0ee'; d.textContent = 'GovMap'; window.__opts = o; setTimeout(() => o.onLoad && o.onLoad(), 30); },
+      onEvent(ev) { return { progress(cb) { if (ev === 'click') window.__click = cb; return this; } }; },
+      zoomToXY(p) { window.__zoom = p; }, geocode() { return Promise.resolve({ data: [{ X: 177800, Y: 613300 }] }); } };`;
+    const mockGovmap = (ctx) => ctx.route('https://www.govmap.gov.il/**', r => r.fulfill({ status: 200, contentType: 'text/javascript', body: GOVMAP_MOCK }));
+
     // ---------- הגשת בקשה מהציבור (מובייל 390px) ----------
     {
-      const actx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+      const actx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }); await mockGovmap(actx);
       const ap = await actx.newPage(); const aErrs = []; ap.on('pageerror', e => aErrs.push(e.message));
       await ap.goto(base + '/'); await ap.waitForSelector('.apply-btn');
       const ctaFirst = await ap.evaluate(() => { const b = document.querySelector('.apply-btn').getBoundingClientRect(); const f = document.querySelector('input[name=username]').getBoundingClientRect(); return b.top < f.top && b.height >= 60; });
@@ -411,6 +421,21 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('הגשת בקשה', 'תוכנית תוואי דוחה קובץ שאינו PDF/DWF כבר בבחירה', (await ap.textContent('.file-card.bad .file-name')).includes('PDF'));
       await ap.setInputFiles('#f-route_plan', { name: 'tvai.pdf', mimeType: 'application/pdf', buffer: pdf });
       await ap.setInputFiles('#f-work_request', { name: 'bakasha.pdf', mimeType: 'application/pdf', buffer: pdf });
+      await ap.click('form.apply-form button[type=submit]');
+      rec('מיקום', 'בלי מיקום במפה – הבקשה לא נשלחת', (await ap.textContent('form.apply-form .form-error')).includes('מיקום'));
+      const locBelowProject = await ap.evaluate(() => { const pr = document.querySelector('form.apply-form input[name=project]').getBoundingClientRect(); const lc = document.querySelector('.loc-card').getBoundingClientRect(); return lc.top > pr.bottom; });
+      await ap.click('.loc-card'); await ap.waitForSelector('dialog[open] iframe.loc-frame');
+      const mframe = await (await ap.waitForSelector('dialog[open] iframe.loc-frame')).contentFrame();
+      await mframe.waitForFunction(() => typeof window.__click === 'function');
+      const center = await mframe.evaluate(() => window.__opts.center);
+      await ap.click('dialog[open] .dlg-foot .btn.primary');
+      const noPick = (await ap.textContent('dialog[open] .form-error')).includes('ללחוץ על המפה');
+      await mframe.evaluate(() => window.__click({ mapPoint: { x: 177812.44, y: 613245.71 } }));
+      await ap.waitForSelector('dialog[open] .loc-coords.ok');
+      await ap.fill('dialog[open] input[name=loc_label]', 'רחוב הנרקיס 7, מול החניה');
+      await ap.screenshot({ path: path.join(SHOTS, 'apply-location.png') });
+      await ap.click('dialog[open] .dlg-foot .btn.primary'); await ap.waitForSelector('.loc-card.done');
+      rec('מיקום', 'שדה "מיקום" מתחת לפרויקט פותח את GovMap על קריית גת, מסמנים בלחיצה ושומרים', locBelowProject && center.x > 170000 && center.x < 185000 && center.y > 605000 && center.y < 620000 && noPick && (await ap.textContent('.loc-card')).includes('רחוב הנרקיס 7'), JSON.stringify(center));
       await ap.click('form.apply-form button[type=submit]');
       rec('הגשת בקשה', 'בלי טופס משטרה – הבקשה לא נשלחת', (await ap.textContent('form.apply-form .form-error')).includes('משטרה'));
       await ap.click('.police-card'); await ap.waitForSelector('dialog[open] form.police-form');
@@ -447,10 +472,16 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('הגשת בקשה', 'אין שגיאות JavaScript בזרימת ההגשה', aErrs.length === 0, aErrs.join(' | '));
       await actx.close();
       // מנהל: רואה את טופס המשטרה כמסמך מוגבל, וממפה גורמים בסדר
-      const mctx = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const mp = await mctx.newPage();
+      const mctx = await browser.newContext({ viewport: { width: 1280, height: 900 } }); await mockGovmap(mctx); const mp = await mctx.newPage();
       await login(mp); await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('table, .empty');
       await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
       rec('הגשת בקשה', 'מנהל המערכת רואה את טופס המשטרה כמסמך "מוגבל"', await mp.isVisible('.lock-chip'));
+      const vf = await (await mp.waitForSelector('.loc-figure iframe.loc-view')).contentFrame();
+      await vf.waitForFunction(() => !!window.__zoom);
+      const zoomed = await vf.evaluate(() => window.__zoom);
+      const figBox = await mp.evaluate(() => { const f = document.querySelector('.loc-figure').getBoundingClientRect(); const i = document.querySelector('.details-with-map dl').getBoundingClientRect(); return { side: !!document.querySelector('.details-with-map > .loc-figure') && f.width > 180 && f.height > 150 && (Math.abs(f.top - i.top) < 40 || f.bottom <= i.top + 4), w: f.width }; });
+      rec('מיקום', 'בעמוד הבקשה המיקום מוצג כמפה עם סמן צמוד לפרטי הבקשה, עם קישור ל-GovMap', zoomed.x === 177812.44 && zoomed.marker === true && figBox.side && (await mp.getAttribute('.loc-figure a[href*="govmap.gov.il/?c=177812.44,613245.71"]', 'target')) === '_blank', JSON.stringify({ zoomed, figBox }));
+      await mp.screenshot({ path: path.join(SHOTS, 'request-location.png') });
       await mp.click('text=בחירת גורמים וסדר'); await mp.waitForSelector('dialog[open] .order-rest');
       await mp.click('dialog[open] .order-rest button >> nth=0'); await mp.click('dialog[open] .order-rest button >> nth=0');
       await mp.click('dialog[open] .order-list li:nth-child(2) button[aria-label^="העלאה"]');
@@ -462,15 +493,67 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       await mp.screenshot({ path: path.join(SHOTS, 'request-turn.png'), fullPage: true });
       await mp.goto(base + '/#/admin/types'); await mp.waitForSelector('.type-card');
       rec('הגשת בקשה', 'מסך "סוגי בקשות" מציג את הסוגים עם מטפלים וגורמים', (await mp.$$('.type-card')).length >= 3);
-      const adNav = await mp.evaluate(() => [...document.querySelectorAll('#sidebar .nav a')].map(e => e.textContent.trim()));
+      const adNav = await mp.evaluate(() => [...document.querySelectorAll('#sidebar .nav > a, #sidebar .nav-folder')].map(e => e.textContent.trim()));
       rec('תפריט', 'אין בתפריט "בקשה חדשה", "פרויקטים", "תקציב", "לוח זמנים" (נמחקו מהמערכת)', !adNav.some(t => ['בקשה חדשה', 'פרויקטים', 'תקציב', 'לוח זמנים'].includes(t)) && adNav.includes('מסמכים') && adNav.includes('משימות'), adNav.join(', '));
       rec('תפריט', 'מנהל המערכת: אין כפתור "בקשה חדשה" בדף הבית', await (async () => { await mp.goto(base + '/#/'); await mp.waitForSelector('.page-head'); return !(await mp.$('a[href="#/requests/new"]')); })());
-      await mp.goto(base + '/#/documents'); await mp.waitForSelector('.doc-group');
-      const groups = await mp.evaluate(() => [...document.querySelectorAll('.doc-group h2')].map(e => e.textContent.trim()));
-      const reqNums = groups.filter(g => /\d/.test(g) && !g.startsWith('פרויקט'));
-      const sorted = [...reqNums].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-      rec('מסמכים', 'מסך המסמכים מקובץ לפי מספר בקשה, מהחדשה לישנה', reqNums.length >= 1 && JSON.stringify(reqNums) === JSON.stringify(sorted) && groups.includes(num), groups.join(' | '));
+      // מסמכים: תיקייה בתפריט הצד + תיקייה לכל בקשה + לשוניות פתוחות/שטופלו
+      await mp.goto(base + '/#/'); await mp.waitForSelector('.nav-folder');
+      const fBefore = await mp.getAttribute('.nav-folder', 'aria-expanded');
+      await mp.click('.nav-folder'); const fAfter = await mp.getAttribute('.nav-folder', 'aria-expanded');
+      if (fAfter !== 'true') await mp.click('.nav-folder');
+      const subLinks = await mp.evaluate(() => [...document.querySelectorAll('.nav-sub a')].map(a => a.textContent.trim()));
+      rec('מסמכים', 'בתפריט הצד "מסמכים" היא תיקייה שנפתחת ונסגרת, ובתוכה "בקשות פתוחות" ו"בקשות שטופלו"', fBefore !== fAfter && subLinks.join() === 'בקשות פתוחות,בקשות שטופלו', `${fBefore}→${fAfter} ${subLinks}`);
+      await mp.click('.nav-sub a >> text=בקשות פתוחות'); await mp.waitForSelector('.doc-folder');
+      const closedByDefault = await mp.evaluate(() => [...document.querySelectorAll('.doc-folder')].every(d => !d.open));
+      await mp.click('.doc-folder >> nth=0 >> summary'); const opened = await mp.evaluate(() => document.querySelector('.doc-folder').open && !!document.querySelector('.doc-folder .files li'));
+      await mp.click('.doc-folder >> nth=0 >> summary'); const reclosed = await mp.evaluate(() => !document.querySelector('.doc-folder').open);
+      rec('מסמכים', 'כל בקשה היא תיקייה סגורה שנפתחת ונסגרת בלחיצה', closedByDefault && opened && reclosed);
+      const groups = await mp.evaluate(() => [...document.querySelectorAll('.doc-folder .df-num')].map(e => e.textContent.trim()));
+      const sorted = [...groups].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      rec('מסמכים', 'התיקיות מסודרות לפי מספר בקשה, מהחדשה לישנה', groups.length >= 1 && JSON.stringify(groups) === JSON.stringify(sorted) && groups.includes(num), groups.join(' | '));
+      await mp.click('button[role=tab] >> text=בקשות שטופלו');
+      const doneTab = await mp.evaluate(() => ({ sel: document.querySelector('[role=tab][aria-selected=true]').textContent, url: location.hash, nums: [...document.querySelectorAll('.doc-folder .df-num')].map(e => e.textContent) }));
+      rec('מסמכים', 'לשונית "בקשות שטופלו" מציגה רק בקשות שהסתיימו', doneTab.sel.startsWith('בקשות שטופלו') && /tab=done/.test(doneTab.url) && !doneTab.nums.includes(num), JSON.stringify(doneTab));
+      await mp.click('button[role=tab] >> text=בקשות פתוחות');
+      await mp.click('text=פתיחת הכל');
       await mp.screenshot({ path: path.join(SHOTS, 'documents-grouped.png'), fullPage: true });
+      // כל הבקשות: בלי מסלול, סינון אוטומטי, לשוניות
+      await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('[role=tab]');
+      const noTrack = await mp.evaluate(() => !document.querySelector('select[name=track]') && !document.querySelector('form[role=search] button[type=submit]') && ![...document.querySelectorAll('th')].some(t => t.textContent.includes('מסלול')));
+      rec('כל הבקשות', 'אין סינון לפי מסלול ואין כפתור "סינון"', noTrack);
+      const rowsAll = await mp.$$eval('tbody tr', t => t.length);
+      await mp.fill('#fq', num); await mp.waitForTimeout(400);
+      const rowsQ = await mp.$$eval('tbody tr', t => t.map(r => r.textContent));
+      rec('כל הבקשות', 'החיפוש מסנן מיד בזמן ההקלדה, בלי ללחוץ על כפתור', rowsQ.length === 1 && rowsQ[0].includes(num) && rowsAll > 1, `${rowsAll}→${rowsQ.length}`);
+      await mp.fill('#fq', ''); await mp.waitForTimeout(300);
+      await mp.selectOption('#fs', 'pending_admin'); await mp.waitForTimeout(200);
+      const stRows = await mp.$$eval('tbody tr', t => t.map(r => r.textContent));
+      rec('כל הבקשות', 'בחירת סטטוס מסננת מיד', stRows.length >= 0 && stRows.every(t => t.includes('ממתינה לאישור מנהל') || t.includes('לא נמצאו')), stRows.length);
+      await mp.selectOption('#fs', ''); await mp.click('button[role=tab] >> text=בקשות שטופלו');
+      const counts = await mp.$$eval('[role=tab]', t => t.map(x => x.textContent));
+      rec('כל הבקשות', 'לשוניות "בקשות פתוחות" ו"בקשות שטופלו" עם מספר הבקשות בכל אחת', counts.length === 2 && /בקשות פתוחות \(\d+\)/.test(counts[0]) && /בקשות שטופלו \(\d+\)/.test(counts[1]), counts.join(' | '));
+      await mp.screenshot({ path: path.join(SHOTS, 'requests-tabs.png'), fullPage: true });
+      // החזרה לתיקון: בחירה למי מחזירים
+      await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('[role=tab]'); await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
+      await mp.click('.req-head button >> text=החזרה לתיקון'); await mp.waitForSelector('dialog[open] [name=return_to]');
+      const opts = await mp.$$eval('dialog[open] [name=return_to]', x => x.length);
+      await mp.screenshot({ path: path.join(SHOTS, 'return-dialog.png') });
+      await mp.check('dialog[open] [name=return_to] >> nth=1'); await mp.fill('dialog[open] textarea[name=comment]', 'חסרה תוכנית חתומה');
+      await mp.click('dialog[open] .dlg-foot .btn.primary'); await mp.waitForSelector('.toast');
+      const tmsg = await mp.textContent('.toast');
+      rec('החזרה לתיקון', 'בחלון ההחזרה בוחרים למי מחזירים (מגיש או גורם תשתית), וההחזרה נשלחת עם הסיבה', opts >= 3 && /הוחזרה ל/.test(tmsg) && /אימייל/.test(tmsg), tmsg);
+      // מסך הכניסה: בלי שורות התשתיות, עם שם הארגון המלא
+      const lctx = await browser.newContext({ viewport: { width: 1280, height: 800 } }); const lp = await lctx.newPage(); await lp.goto(base + '/'); await lp.waitForSelector('.auth-art h1');
+      const art = await lp.textContent('.auth-art');
+      rec('מסך כניסה', 'מסך הכניסה בלי "מים וביוב / חשמל / תקשורת", ועם "מינהל הנדסה עיריית קריית גת"', !/מים וביוב|חשמל|תקשורת/.test(art) && art.includes('מינהל הנדסה עיריית קריית גת'), art.slice(0, 120));
+      await lctx.close();
+      await mp.goto(base + '/#/admin/settings'); await mp.waitForSelector('[name=login_heading]');
+      await mp.fill('[name=login_heading]', 'ברוכים הבאים לתיאום ההנדסי'); await mp.fill('[name=login_text]', 'כאן מגישים ועוקבים אחרי בקשות.');
+      await mp.click('text=שמירת מסך הכניסה'); await mp.waitForTimeout(400);
+      const lctx2 = await browser.newContext({ viewport: { width: 1280, height: 800 } }); const lp2 = await lctx2.newPage(); await lp2.goto(base + '/'); await lp2.waitForSelector('.auth-art h1');
+      rec('מסך כניסה', 'עריכת הכותרת והתיאור של מסך הכניסה מהגדרות וקבצים', (await lp2.textContent('.auth-art h1')) === 'ברוכים הבאים לתיאום ההנדסי' && (await lp2.textContent('.auth-art')).includes('כאן מגישים ועוקבים'));
+      await lp2.screenshot({ path: path.join(SHOTS, 'login-edited.png') });
+      await lctx2.close();
       await mctx.close();
     }
 

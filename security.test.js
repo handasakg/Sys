@@ -28,7 +28,7 @@ async function applyPublic(baseUrl, over = {}) {
   const meta = await new Client(baseUrl).req('GET', '/api/public/apply-meta');
   const fd = new FormData(); applySeq++;
   const f = { kind: 'resident', username: `מגיש ${applySeq}${crypto.randomBytes(2).toString('hex')}`, password: 'Ap' + crypto.randomBytes(8).toString('hex') + '9', type: meta.data.types[0].key,
-    email: `apply${applySeq}@example.com`, address: 'הגפן 1, קריית גת', phone: '0501234567', project: 'פרויקט בדיקה', police: JSON.stringify(TEST_POLICE), ...over };
+    email: `apply${applySeq}@example.com`, address: 'הגפן 1, קריית גת', phone: '0501234567', project: 'פרויקט בדיקה', police: JSON.stringify(TEST_POLICE), location: JSON.stringify({ x: 177812.4, y: 613245.7, z: 9, label: 'הגפן 1' }), ...over };
   for (const [k, val] of Object.entries(f)) fd.append(k, val);
   const pdfB = Buffer.from('%PDF-1.4\n% test\n%%EOF');
   fd.append('route_plan', new Blob([pdfB]), 'plan.pdf'); fd.append('work_request', new Blob([pdfB]), 'request.pdf');
@@ -692,7 +692,7 @@ class Client {
       const police = { applicant_name: 'ישראל ישראלי', project: 'שדרוג קווי ביוב', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'חפירה ברחוב הגפן', work_time: 'ימים א׳-ה׳', work_hours: '07:00-19:00', contact: 'דני 052-7654321', notes: '', date: '2026-12-01' };
       const apply = (ip, over = {}, files = {}) => {
         const fd = new FormData();
-        const base = { kind: 'entrepreneur', username: 'ישראל ישראלי', password: APPLY_PW, type: tKey, email: 'israel@example.com', address: 'הגפן 3, קריית גת', phone: '0501234567', project: 'שדרוג קווי ביוב', police: JSON.stringify(police), ...over };
+        const base = { kind: 'entrepreneur', username: 'ישראל ישראלי', password: APPLY_PW, type: tKey, email: 'israel@example.com', address: 'הגפן 3, קריית גת', phone: '0501234567', project: 'שדרוג קווי ביוב', police: JSON.stringify(police), location: JSON.stringify({ x: 177750.5, y: 613190.25, z: 9, label: 'רחוב הגפן 3' }), ...over };
         for (const [k, v2] of Object.entries(base)) if (v2 !== undefined) fd.append(k, v2);
         const fl = { route_plan: ['plan.dwf', dwf], work_request: ['request.pdf', pdfBuf], ...files };
         for (const [k, v2] of Object.entries(fl)) if (v2) fd.append(k, new Blob([v2[1]]), v2[0]);
@@ -702,10 +702,11 @@ class Client {
       for (const [desc, over, files] of [['שדה מלכודת', { website: 'spam' }], ['בלי טופס משטרה', { police: undefined }], ['ת.ז שגויה', { police: JSON.stringify({ ...police, id_number: '123456789' }) }],
         ['טלפון שגוי', { phone: '12345' }], ['אימייל שגוי', { email: 'not-mail' }], ['סוג בקשה לא קיים', { type: 'nope' }], ['בלי תוכנית תוואי', {}, { route_plan: null }],
         ['תוכנית DWG (רק PDF/DWF)', {}, { route_plan: ['plan.dwg', Buffer.from('AC1032 dwg')] }], ['HTML שמתחזה ל-PDF', {}, { work_request: ['x.pdf', Buffer.from('<html><script>alert(1)</script>')] }],
-        ['שם משתמש עם תו כיווניות', { username: 'ישראל‮abc' }], ['סיסמה חלשה', { password: '1234' }]]) {
+        ['שם משתמש עם תו כיווניות', { username: 'ישראל‮abc' }], ['סיסמה חלשה', { password: '1234' }],
+        ['בלי מיקום', { location: undefined }], ['מיקום מחוץ לישראל', { location: JSON.stringify({ x: 5, y: 5 }) }], ['מיקום לא מספרי', { location: '{"x":"abc","y":"1"}' }]]) {
         const x = await apply(`10.50.0.${neg.length + 1}`, over, files); if (x.status < 400) neg.push(`${desc}:${x.status}`);
       }
-      rec('הגשה מהציבור', '11 הגשות לא תקינות נדחות בשרת (מלכודת, משטרה, ת.ז, טלפון, אימייל, סוג, קבצים, שם, סיסמה)', neg.length === 0, neg.join(', '));
+      rec('הגשה מהציבור', '14 הגשות לא תקינות נדחות בשרת (מלכודת, משטרה, ת.ז, טלפון, אימייל, סוג, קבצים, שם, סיסמה, מיקום)', neg.length === 0, neg.join(', '));
       const ok = await apply('10.60.0.1');
       rec('הגשה מהציבור', 'יזם מגיש בקשה עם שם משתמש בעברית ומקבל מספר בקשה', ok.status === 201 && /^TH-\d{4}-\d{4}$/.test(ok.data.number), `${ok.status} ${ok.data.number || ok.data.error}`);
       const dup = await apply('10.60.0.2');
@@ -731,6 +732,24 @@ class Client {
       rec('טופס משטרה', 'טופס המשטרה נשמר כ-PDF: גלוי רק למנהל המערכת ולאחראי מיפוי (לא למגיש ולא לגורם תשתית)',
         !av.data.documents.some(d => d.category === 'טופס משטרה') && polDl.status === 404 && b1v.status === 404 && mv.data.documents.some(d => d.category === 'טופס משטרה') && mpDl.status === 200);
       rec('הגשה מהציבור', 'המגיש מחובר אוטומטית ורואה את הבקשה, תוכנית התוואי ובקשת העבודה שלו', av.status === 200 && av.data.documents.filter(d => ['תוכנית תוואי', 'בקשת עבודה'].includes(d.category)).length === 2);
+      // מיקום העבודה (GovMap)
+      {
+        const loc5 = av.data.location;
+        rec('מיקום', 'המיקום שסומן נשמר בבקשה ומוצג לכל מי שרואה אותה, עם קישור ל-GovMap', !!loc5 && loc5.x === 177750.5 && loc5.y === 613190.25 && loc5.link === 'https://www.govmap.gov.il/?c=177750.5,613190.25&z=9' && mv.data.location && mv.data.location.label === 'רחוב הגפן 3', JSON.stringify(loc5));
+        const upA = await appl.req('PUT', `/api/requests/${reqId5}/location`, { location: { x: 178000, y: 613000 } });
+        const upM = await mapper.c.req('PUT', `/api/requests/${reqId5}/location`, { location: { x: 177760, y: 613200, z: 9.5, label: 'תיקון: מול מספר 5' } });
+        const upBad = await mapper.c.req('PUT', `/api/requests/${reqId5}/location`, { location: { x: 'x' } });
+        const now5 = db5.prepare('SELECT loc_x, loc_label FROM requests WHERE id = ?').get(reqId5);
+        rec('מיקום', 'אחראי המיפוי יכול לעדכן מיקום (עם אימות), והמגיש לא יכול לשנות אחרי ההגשה', upA.status === 403 && upM.status === 200 && upBad.status === 400 && now5.loc_x === 177760 && now5.loc_label === 'תיקון: מול מספר 5', `${upA.status} ${upM.status} ${upBad.status}`);
+        const cfg0 = await new Client(b5).req('GET', '/api/public/map-config');
+        await ad.req('PUT', '/api/admin/settings', { govmap_token: 'test-token_123' });
+        const cfg1 = await new Client(b5).req('GET', '/api/public/map-config');
+        const badTok = await ad.req('PUT', '/api/admin/settings', { govmap_token: '"><script>' });
+        rec('מיקום', 'מפתח GovMap נקבע מהגדרות וקבצים ומגיע לעמוד המפה (ומפתח לא תקין נדחה)', cfg0.data.token === '' && cfg1.data.token === 'test-token_123' && badTok.status === 400 && cfg1.data.center.x > 170000);
+        const mh = await fetch(b5 + '/map.html'); const csp = mh.headers.get('content-security-policy') || ''; const mainCsp = (await fetch(b5 + '/')).headers.get('content-security-policy') || '';
+        rec('מיקום', 'עמוד המפה מורשה לטעון רק את GovMap ורק בתוך האתר עצמו; שאר האתר נשאר חסום', mh.status === 200 && /script-src 'self' https:\/\/www\.govmap\.gov\.il/.test(csp) && /frame-ancestors 'self'/.test(csp) && mh.headers.get('x-frame-options') === 'SAMEORIGIN'
+          && !/govmap/.test(mainCsp) && /frame-ancestors 'none'/.test(mainCsp), csp.slice(0, 90));
+      }
       // סדר טיפול עם דוא"ל
       mails.length = 0;
       await mapper.c.req('POST', `/api/requests/${reqId5}/status`, { status: 'review' });
@@ -746,6 +765,48 @@ class Client {
       rec('סדר טיפול', 'כשהגורם הראשון סיים – הגורם הבא מקבל דוא"ל שעכשיו תורו', !!m2);
       await b2.c.req('POST', `/api/approvals/${ap5[1].id}/decide`, { decision: 'approved' });
       rec('סדר טיפול', 'אחרי הגורם האחרון – ממתינה לאישור מנהל המערכת', db5.prepare('SELECT status FROM requests WHERE id = ?').get(reqId5).status === 'pending_admin');
+      // החזרה לתיקון לגורם תשתית: הגורם מקבל אימייל עם הסיבה וקישור, וחוות הדעת שלו נפתחת מחדש
+      mails.length = 0;
+      r = await ad.req('POST', `/api/requests/${reqId5}/status`, { status: 'returned', return_to: ap5[0].id, comment: 'חסר אישור קידוח מעודכן', auto_approve: false });
+      await new Promise(res => setTimeout(res, 500));
+      const rm = mails.find(m => m.to === 'b1@example.gov.il');
+      const rmText = rm ? Buffer.from((rm.body.split(/\n\n/).slice(1).join('\n\n').match(/[A-Za-z0-9+/=\n]{40,}/) || [''])[0].replace(/\s+/g, ''), 'base64').toString('utf8') + rm.body : '';
+      const st5 = db5.prepare('SELECT status FROM requests WHERE id = ?').get(reqId5).status; const reop = db5.prepare('SELECT decision FROM request_approvals WHERE id = ?').get(ap5[0].id).decision;
+      rec('החזרה לתיקון', 'החזרה לגורם תשתית: הגורם מקבל אימייל עם סיבת ההחזרה וקישור לבקשה, וחוות הדעת שלו נפתחת מחדש',
+        r.status === 200 && r.data.returned_to && /חסר אישור קידוח מעודכן/.test(rmText) && new RegExp(`/#/requests/${reqId5}`).test(rmText) && st5 === 'coordination' && reop === 'pending' && !mails.some(m => m.to === 'b2@example.gov.il'), `${r.status} ${st5} ${reop}`);
+      r = await b2.c.req('POST', `/api/approvals/${ap5[1].id}/decide`, { decision: 'approved' });
+      rec('החזרה לתיקון', 'אחרי החזרה – התור חוזר לגורם שהוחזר אליו (גורם אחר לא יכול להחליט במקומו)', r.status === 409);
+      await b1.c.req('POST', `/api/approvals/${ap5[0].id}/decide`, { decision: 'approved', comment: 'צורף אישור קידוח' });
+      rec('החזרה לתיקון', 'בלי אישור אוטומטי (כשבוחרים כך) – אחרי התיקון הבקשה חוזרת לאישור מנהל המערכת', db5.prepare('SELECT status FROM requests WHERE id = ?').get(reqId5).status === 'pending_admin');
+      // ברירת המחדל: החזרה מהשלב האחרון לגורם – אחרי התיקון הבקשה מאושרת אוטומטית, בלי בדיקה חוזרת
+      {
+        const applIdA = db5.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(reqId5).applicant_id;
+        const sa = seedReq(db5, applIdA, { status: 'pending_admin', title: 'בקשה לאישור אוטומטי אחרי תיקון' });
+        const apA = Number(db5.prepare("INSERT INTO request_approvals (request_id, infra_body_id, seq, decision, decided_at) VALUES (?, ?, 1, 'approved', datetime('now'))").run(sa.id, ap5[0].infra_body_id).lastInsertRowid);
+        r = await ad.req('POST', `/api/requests/${sa.id}/status`, { status: 'returned', return_to: apA, comment: 'יש לעדכן את שעות העבודה' });
+        const autoFlag = r.data.auto_approve === true;
+        mails.length = 0;
+        r = await b1.c.req('POST', `/api/approvals/${apA}/decide`, { decision: 'approved', comment: 'עודכן' });
+        await new Promise(res => setTimeout(res, 800));
+        const fin = db5.prepare('SELECT status, closed_at FROM requests WHERE id = ?').get(sa.id);
+        const docA = db5.prepare("SELECT 1 FROM documents WHERE request_id = ? AND category = 'אישור לביצוע עבודה'").get(sa.id);
+        const pdfMail = mails.find(m => m.to === 'israel@example.com' && /application\/pdf/.test(m.body));
+        rec('החזרה לתיקון', 'אחרי שהגורם תיקן ואישר – הבקשה מאושרת אוטומטית בלי בדיקה חוזרת, ומסמך האישור נשלח למגיש', autoFlag && r.status === 200 && r.data.approved && fin.status === 'approved' && !!fin.closed_at && !!docA && !!pdfMail, `${r.status} ${fin.status}`);
+        const sb = seedReq(db5, applIdA, { status: 'pending_admin' });
+        const apB = Number(db5.prepare("INSERT INTO request_approvals (request_id, infra_body_id, seq, decision, decided_at) VALUES (?, ?, 1, 'approved', datetime('now'))").run(sb.id, ap5[0].infra_body_id).lastInsertRowid);
+        await ad.req('POST', `/api/requests/${sb.id}/status`, { status: 'returned', return_to: apB, comment: 'בדיקה' });
+        await b1.c.req('POST', `/api/approvals/${apB}/decide`, { decision: 'rejected', comment: 'לא ניתן לבצע' });
+        rec('החזרה לתיקון', 'אם הגורם דוחה אחרי ההחזרה – אין אישור אוטומטי', db5.prepare('SELECT status FROM requests WHERE id = ?').get(sb.id).status !== 'approved');
+      }
+      // החזרה למגיש (על בקשה נוספת שלו)
+      const applId5 = db5.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(reqId5).applicant_id;
+      const sr = seedReq(db5, applId5, { status: 'review', title: 'בקשה להחזרה למגיש' });
+      mails.length = 0;
+      r = await ad.req('POST', `/api/requests/${sr.id}/status`, { status: 'returned', return_to: 'applicant', comment: 'יש לצרף תוכנית חתומה' });
+      await new Promise(res => setTimeout(res, 500));
+      const am = mails.find(m => m.to === 'israel@example.com');
+      const amText = am ? am.body + Buffer.from((am.body.split(/\n\n/).slice(1).join('\n\n').match(/[A-Za-z0-9+/=\n]{40,}/) || [''])[0].replace(/\s+/g, ''), 'base64').toString('utf8') : '';
+      rec('החזרה לתיקון', 'החזרה למגיש: המגיש מקבל אימייל עם הסיבה וקישור לכניסה', r.status === 200 && /יש לצרף תוכנית חתומה/.test(amText) && new RegExp(`/#/requests/${sr.id}`).test(amText));
       mails.length = 0;
       r = await ad.req('POST', `/api/requests/${reqId5}/status`, { status: 'approved', comment: 'מאושר' });
       await new Promise(res => setTimeout(res, 800));

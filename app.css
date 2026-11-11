@@ -629,3 +629,90 @@ dialog.police-dlg { max-width: 680px; border-top: 6px solid #1B2F6B; }
 .doc-group .panel-head h2 { font-size: 1.15rem; }
 .doc-group .dg-num { font-weight: 800; letter-spacing: .03em; text-decoration: none; }
 .doc-group .dg-num:hover { text-decoration: underline; }
+
+/* תיקיית מסמכים בתפריט הצד */
+.nav-folder { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 12px; border-radius: var(--radius-sm); color: var(--ink); background: transparent; border: 0; font: inherit; text-align: start; cursor: pointer; width: 100%; }
+.nav-folder:hover { background: var(--surface-2); }
+.nav-folder .nf-ic { display: inline-flex; }
+.nav-folder .nf-chev { margin-inline-start: auto; display: inline-flex; transition: transform .2s ease; }
+.nav-folder .nf-chev svg { width: 16px; height: 16px; transform: scaleX(-1); }
+.nav-folder[aria-expanded="true"] .nf-chev { transform: rotate(-90deg); }
+.nav-sub { display: flex; flex-direction: column; gap: 2px; margin-inline-start: 22px; padding-inline-start: 10px; border-inline-start: 2px solid var(--rule); }
+.nav-sub a { min-height: 38px; font-size: .94rem; }
+:root[data-sidebar="compact"] .nav-folder { justify-content: center; }
+:root[data-sidebar="compact"] .nav-folder .nf-chev { display: none; }
+:root[data-sidebar="compact"] .nav-sub { margin-inline-start: 0; padding-inline-start: 0; border: 0; }
+@media (prefers-reduced-motion: reduce) { .nav-folder .nf-chev { transition: none; } }
+
+/* לשוניות עם מונה */
+.tab-count { font-weight: 500; color: var(--ink-2); }
+.tabs button[aria-selected="true"] .tab-count { color: var(--accent); }
+
+/* מסמכים: כל בקשה תיקייה */
+.doc-groups { display: flex; flex-direction: column; gap: 10px; }
+.doc-folder { border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.doc-folder > summary { list-style: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 16px; min-height: 52px; cursor: pointer; }
+.doc-folder > summary::-webkit-details-marker { display: none; }
+.doc-folder > summary:hover { background: var(--surface-2); }
+.doc-folder > summary:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.doc-folder .df-ic { display: inline-flex; color: #C98A12; }
+.doc-folder .df-ic svg { width: 24px; height: 24px; stroke: currentColor; fill: color-mix(in srgb, #F2B705 28%, transparent); stroke-width: 1.7; }
+.doc-folder .df-ic.open, .doc-folder[open] .df-ic:not(.open) { display: none; }
+.doc-folder[open] .df-ic.open { display: inline-flex; }
+.doc-folder.handled .df-ic { color: var(--ink-2); }
+.doc-folder.handled .df-ic svg { fill: color-mix(in srgb, var(--ink-2) 14%, transparent); }
+.doc-folder .df-num { font-weight: 800; letter-spacing: .03em; }
+.doc-folder .df-title { color: var(--ink-2); flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-folder .df-count { font-size: .85rem; color: var(--ink-2); }
+.doc-folder[open] > summary { border-bottom: 1px solid var(--rule); background: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
+.doc-folder .df-body { padding: 4px 16px 14px; }
+@media (max-width: 560px) { .doc-folder .df-title { flex-basis: 100%; order: 5; white-space: normal; } }
+.fix-chip { background: var(--warn-soft); color: var(--ink); font-size: .72rem; margin-inline-start: 6px; }
+.fix-chip::before { display: none; }
+.check.auto-fix { border: 1px solid var(--rule); border-radius: 12px; padding: 10px 12px; background: var(--ok-soft); margin: 8px 0; }
+
+/* חיפוש עליון: רחב יותר, בלי חיתוך הטקסט */
+.topbar form[role=search] { flex: 1 1 280px; min-width: 0; max-width: 480px; }
+.topbar #gsearch { width: 100%; text-overflow: ellipsis; }
+@media (max-width: 560px) {
+  .topbar { flex-wrap: wrap; row-gap: 8px; }
+  .topbar form[role=search] { order: 10; flex: 1 1 100%; max-width: none; }
+}
+
+/* ---------- מיקום (GovMap) ---------- */
+.loc-card { width: 100%; display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center; text-align: start; cursor: pointer; font: inherit; color: var(--ink);
+  border: 1.5px dashed var(--rule-strong); border-radius: 12px; padding: 12px; background: var(--paper); margin-top: 4px; }
+.loc-card:hover { border-color: var(--accent); background: var(--accent-soft); }
+.loc-card:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.loc-card .loc-ic { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: #E03B2F; color: #fff; }
+.loc-card .loc-ic svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; }
+.loc-card .loc-title { display: block; font-weight: 750; }
+.loc-card .loc-sub { display: block; font-size: .85rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.loc-card .loc-status { font-size: .8rem; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
+.loc-card.done { border-style: solid; border-color: var(--ok); background: var(--ok-soft); }
+.loc-card.done .loc-status { background: var(--ok); color: var(--surface); }
+.loc-card.done .loc-status::before { content: "✓ "; }
+.loc-card.bad { border-color: var(--bad); background: var(--bad-soft); }
+@media (max-width: 460px) { .loc-card { grid-template-columns: 40px 1fr; } .loc-card .loc-status { grid-column: 1 / -1; justify-self: start; } }
+dialog.loc-dialog { width: min(920px, calc(100vw - 24px)); max-width: none; }
+.loc-frame-wrap { border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; background: #E8EEF3; }
+.loc-frame { display: block; width: 100%; height: min(62vh, 560px); border: 0; }
+.loc-coords { margin: 10px 0; font-weight: 650; color: var(--ink-2); }
+.loc-coords.ok { color: var(--ok); }
+.loc-fallback { border: 1px solid var(--rule); border-radius: 12px; padding: 12px 14px; background: var(--surface-2); }
+.loc-fallback ol { margin: 0 0 10px; padding-inline-start: 20px; display: grid; gap: 8px; }
+/* בעמוד הבקשה: המפה לצד הפרטים */
+.details-with-map { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 250px); gap: 18px; align-items: start; }
+.panel:has(> .details-with-map) { container-type: inline-size; }
+@container (max-width: 600px) { .details-with-map { grid-template-columns: 1fr; } .details-with-map .loc-figure { order: -1; } }
+@media (max-width: 760px) { .details-with-map { grid-template-columns: 1fr; } .details-with-map .loc-figure { order: -1; } }
+.loc-figure { margin: 0; border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.loc-figure .loc-view { display: block; width: 100%; height: 220px; border: 0; background: #E8EEF3; }
+.loc-figure figcaption { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; }
+.loc-figure .loc-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.loc-static { position: relative; display: grid; place-items: center; height: 180px; background: linear-gradient(160deg, #DCE8F2, #EEF3E6); overflow: hidden; text-decoration: none; color: var(--ink); }
+.loc-static .loc-grid { position: absolute; inset: 0; background-image: linear-gradient(rgba(11,98,184,.12) 1px, transparent 1px), linear-gradient(90deg, rgba(11,98,184,.12) 1px, transparent 1px); background-size: 22px 22px; }
+.loc-static .loc-pin { position: relative; color: #E03B2F; } .loc-static .loc-pin svg { width: 44px; height: 44px; stroke: currentColor; fill: color-mix(in srgb, #E03B2F 25%, transparent); stroke-width: 2; }
+.loc-static .loc-open { position: absolute; bottom: 8px; font-size: .8rem; font-weight: 700; background: rgba(255,255,255,.9); padding: 2px 10px; border-radius: 999px; }
+.loc-none { display: grid; place-items: center; gap: 4px; height: 120px; color: var(--ink-2); background: var(--surface-2); }
+.loc-none svg { width: 28px; height: 28px; stroke: currentColor; fill: none; stroke-width: 1.8; }

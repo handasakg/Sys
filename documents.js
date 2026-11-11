@@ -91,12 +91,8 @@ function approvalPdf(d) {
   doc.text('הבקשה אושרה', M + 120, 49, { size: 14, bold: true, color: C.ok });
   doc.text(`מספר בקשה ${r.number}`, M + 148, 70, { size: 10, bold: true, color: C.ink });
   doc.text(`תאריך אישור ${dmy(r.closed_at)}`, M + 148, 88, { size: 9.5, color: C.ink });
-  // פס תוקף
   const from = r.planned_start || (r.closed_at || '').slice(0, 10); const to = r.planned_end;
-  doc.rect(M, 116, WIDTH, 34, { fill: C.strip, r: 8 });
-  doc.text(`תוקף האישור: מ-${dmy(from)} עד ${to ? dmy(to) : 'סיום העבודה'}`, RIGHT - 14, 138, { size: 12, bold: true, color: C.navy });
-  doc.text(`הוגשה ${dmy(r.submitted_at || r.created_at)}`, M + 14, 138, { size: 10, color: C.ink, align: 'left' });
-  L.y = 168;
+  L.y = 122;
 
   L.section('מגיש הבקשה');
   L.fields([
@@ -108,6 +104,7 @@ function approvalPdf(d) {
   L.fields([
     { label: 'סוג הבקשה', value: d.typeName, strong: true }, { label: 'פרויקט', value: r.project_name || pol.project || '—' },
     { label: 'מיקום / כתובת העבודה', value: r.address || '—' }, { label: 'גוש / חלקה', value: [r.gush, r.helka].filter(Boolean).join(' / ') || '—' },
+    ...(r.loc_x ? [{ label: 'נ.צ. המיקום (רשת ישראל)', value: `${Math.round(r.loc_x)}, ${Math.round(r.loc_y)}` }, { label: 'במפת GovMap', value: `govmap.gov.il/?c=${Math.round(r.loc_x)},${Math.round(r.loc_y)}&z=9` }] : []),
     { label: 'מהות העבודה', value: r.description || pol.description || r.title, full: true },
   ]);
   L.section('מועדים ושעות פעילות');

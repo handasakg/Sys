@@ -46,16 +46,21 @@ const randomToken = (bytes = 32) => crypto.randomBytes(bytes).toString('base64ur
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 // ---------- כותרות אבטחה ----------
-function securityHeaders(res, { isHtml = false } = {}) {
+// עמוד המפה (map.html) הוא היחיד שמותר לו לטעון את GovMap, ורק בתוך האתר עצמו (iframe מאותו מקור)
+const GOVMAP = 'https://www.govmap.gov.il https://*.govmap.gov.il';
+function securityHeaders(res, { isHtml = false, map = false } = {}) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Frame-Options', map ? 'SAMEORIGIN' : 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-  res.setHeader('Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; " +
-    "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'" +
+  if (map) res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  res.setHeader('Content-Security-Policy', map
+    ? `default-src 'self'; script-src 'self' ${GOVMAP}; style-src 'self' 'unsafe-inline' ${GOVMAP}; img-src 'self' data: blob: ${GOVMAP}; font-src 'self' data: ${GOVMAP}; ` +
+      `connect-src 'self' ${GOVMAP}; frame-src ${GOVMAP}; worker-src blob:; form-action 'none'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'` + (config.forceHttps ? '; upgrade-insecure-requests' : '')
+    : "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; " +
+    "connect-src 'self'; form-action 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'" +
     (config.forceHttps ? '; upgrade-insecure-requests' : ''));
   if (config.forceHttps) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.removeHeader('X-Powered-By');

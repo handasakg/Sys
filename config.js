@@ -32,6 +32,7 @@ const config = Object.freeze({
   isProd,
   port: int('PORT', 3000),
   host: env.HOST || '127.0.0.1',
+  govmapToken: (env.GOVMAP_TOKEN || '').trim(), // מפתח GovMap לדומיין (אפשר גם מהגדרות וקבצים)
   publicUrl: (env.PUBLIC_URL || `http://localhost:${int('PORT', 3000)}`).replace(/\/$/, ''),
   trustProxy: env.TRUST_PROXY === '1',
   forceHttps: isProd ? env.FORCE_HTTPS !== '0' : env.FORCE_HTTPS === '1',

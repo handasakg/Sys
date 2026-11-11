@@ -113,7 +113,7 @@ const DEFAULT_SETTINGS = {
   'files.max_mb': '20',
   'sla.regular_days': '14',
   'sla.fast_days': '3',
-  'org.name': 'מינהל הנדסה',
+  'org.name': 'מינהל הנדסה עיריית קריית גת',
   'org.system_title': 'מערכת תיאום הנדסי',
 };
 const insSet = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -145,11 +145,16 @@ for (const r of require('./permissions').DEFAULT_ROLES.filter(x => ['תושב/ת
 const hasCol = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some(x => x.name === c);
 if (!hasCol('sessions', 'remember')) db.exec('ALTER TABLE sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 0');
 for (const [t, c, def] of [['users', 'applicant_kind', 'TEXT'], ['users', 'address', 'TEXT'], ['requests', 'applicant_kind', 'TEXT'], ['requests', 'project_name', 'TEXT'],
-  ['request_approvals', 'seq', 'INTEGER NOT NULL DEFAULT 0'], ['request_approvals', 'notified_at', 'TEXT'], ['documents', 'visibility', "TEXT NOT NULL DEFAULT 'default'"]]) {
+  ['request_approvals', 'seq', 'INTEGER NOT NULL DEFAULT 0'], ['request_approvals', 'notified_at', 'TEXT'], ['documents', 'visibility', "TEXT NOT NULL DEFAULT 'default'"],
+  ['requests', 'fix_auto_approval', 'INTEGER'], ['requests', 'fix_auto_by', 'INTEGER'],
+  ['requests', 'loc_x', 'REAL'], ['requests', 'loc_y', 'REAL'], ['requests', 'loc_z', 'REAL'], ['requests', 'loc_label', 'TEXT']]) {
   if (!hasCol(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
 }
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('approval.guidelines', ?)").run(require('./documents').DEFAULT_GUIDELINES);
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('public.apply', '1')").run();
+// שם הארגון המלא, ותיאור מסך הכניסה (נערך מהגדרות וקבצים)
+db.prepare("UPDATE settings SET value = 'מינהל הנדסה עיריית קריית גת' WHERE key = 'org.name' AND value = 'מינהל הנדסה'").run();
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('login.text', 'בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה – כל גורמי התשתית על אותו מסלול, וכל אחד רואה מה ממתין לו.')").run();
 // הוסרו מהמערכת: בקשה חדשה פנימית, פרויקטים, תקציב ולוח זמנים. מנקים את ההרשאות הישנות,
 // ושם הפרויקט של בקשות ישנות נשמר כטקסט בבקשה. הטבלאות הישנות נשארות בלי שימוש כדי שלא יימחקו נתונים.
 {

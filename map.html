@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>מפת מיקום העבודה</title>
+<link rel="stylesheet" href="/map.css">
+<script src="/map.js" defer></script>
+</head>
+<body>
+<div class="bar" id="bar" hidden>
+  <form id="search" role="search" aria-label="חיפוש כתובת בקריית גת">
+    <label for="q" class="sr-only">חיפוש כתובת בקריית גת</label>
+    <input id="q" type="search" maxlength="120" placeholder="חיפוש רחוב או כתובת בקריית גת" autocomplete="off">
+    <button type="submit">חיפוש</button>
+  </form>
+  <p class="hint" id="hint">לחצו על המפה במקום המדויק של העבודה</p>
+</div>
+<div id="map" aria-label="מפת GovMap"></div>
+<p class="msg" id="msg" role="status" aria-live="polite">טוען מפה…</p>
+</body>
+</html>

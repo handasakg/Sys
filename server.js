@@ -16,7 +16,7 @@ const PUBLIC = config.ROOT;
 // קוד השרת, .env, מסד הנתונים, הגיבויים והבדיקות לעולם לא נגישים מהרשת.
 const PUBLIC_FILES = new Set(['index.html', 'app.js', 'app.css', 'app.min.js', 'app.min.css', 'favicon.svg', 'og-image.png', 'logo.png', 'sw.js',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon-32.png',
-  'manifest.webmanifest', 'robots.txt', 'sitemap.xml', 'privacy.html', 'accessibility.html', '404.html']);
+  'manifest.webmanifest', 'robots.txt', 'sitemap.xml', 'privacy.html', 'accessibility.html', '404.html', 'map.html', 'map.js', 'map.css']);
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8',
@@ -85,7 +85,7 @@ function serveStatic(req, res, urlPath, query) {
   let st; try { st = fs.statSync(file); } catch { return false; }
   if (!st.isFile()) return false;
   const e = loadStatic(file);
-  sec.securityHeaders(res, { isHtml: true });
+  sec.securityHeaders(res, { isHtml: true, map: name === 'map.html' });
   res.setHeader('Content-Type', STATIC_TYPES[e.ext] || 'application/octet-stream');
   res.setHeader('ETag', e.etag);
   res.setHeader('Vary', 'Accept-Encoding');

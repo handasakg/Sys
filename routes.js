@@ -120,14 +120,15 @@ route('POST', '/api/auth/logout', (req, res) => {
   return { ok: true };
 });
 
+const loginTexts = () => ({ heading: getSetting('login.heading') || '', text: getSetting('login.text') || '' });
 route('GET', '/api/auth/me', (req) => {
-  if (!req.user) return status(401, { error: 'לא מחובר', title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null });
+  if (!req.user) return status(401, { error: 'לא מחובר', title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, login: loginTexts() });
   const u = req.user;
   const unread = db.prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read = 0').get(u.id).c;
   const roleName = db.prepare('SELECT name FROM roles WHERE id = ?').get(u.role_id)?.name || '';
   const infraName = u.infra_body_id ? db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(u.infra_body_id)?.name || null : null;
   return { user: { ...publicUser(u), role_name: roleName, infra_name: infraName, is_sysadmin: isSysAdmin(req) }, perms: permsList(req), csrf: req.session.csrf, prefs: JSON.parse(u.prefs || '{}'),
-    title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, unread,
+    title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, login: loginTexts(), unread,
     meta: { types: typesMap(), typesActive: typesAll().filter(t => t.active).map(t => t.key), statuses: W.STATUSES, tracks: W.TRACKS, trackStatus: W.TRACK_STATUS,
       files: { allowed: up.allowedExt(), maxMb: Math.round(up.maxBytes() / 1048576) } } };
 });
@@ -325,11 +326,13 @@ route('GET', '/api/requests/:id', (req) => {
   const transitions = Object.entries(W.TRANSITIONS[r.status] || {}).filter(([, need]) => allowed(req, r, need)).map(([to]) => to);
   const ap = db.prepare('SELECT email, phone, address FROM users WHERE id = ?').get(r.applicant_id) || {};
   const applicant = { email: ap.email || null, phone: ap.phone || null, address: ap.address || null, kind: r.applicant_kind || null };
-  return { request: { ...decorate(r), type_name: typesMap()[r.type] || r.type }, applicant, approvals, turn_id: turn ? turn.id : null, approvalDoc, history: hist, documents: docs, tasks, transitions, members,
+  const location = r.loc_x ? { x: r.loc_x, y: r.loc_y, z: r.loc_z || 9, label: r.loc_label || null, link: govmapLink(r.loc_x, r.loc_y, r.loc_z || 9), map: !!govmapToken() } : null;
+  return { request: { ...decorate(r), type_name: typesMap()[r.type] || r.type }, applicant, location, approvals, turn_id: turn ? turn.id : null, approvalDoc, history: hist, documents: docs, tasks, transitions, members,
     docsOwnOnly: docsOwnOnly() && !isSysAdmin(req) && !can(req, 'requests.mapping'),
     can: { edit: canEditRequest(req, r), delete: can(req, 'requests.delete'), assign: can(req, 'requests.assign'),
       approveTrack: can(req, 'requests.approve_track'), upload: can(req, 'files.upload'), decide: can(req, 'approvals.decide'), sysadmin: isSysAdmin(req),
-      mapInfra: can(req, 'requests.assign') || can(req, 'requests.mapping') } };
+      mapInfra: can(req, 'requests.assign') || can(req, 'requests.mapping'),
+      editLocation: canEditRequest(req, r) || can(req, 'requests.mapping') || can(req, 'requests.assign') } };
 });
 
 route('PUT', '/api/requests/:id', (req) => {
@@ -428,6 +431,25 @@ route('POST', '/api/requests/:id/status', async (req) => {
     const pending = db.prepare(`SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision NOT IN ${DONE}`).get(r.id).c;
     if (pending) throw new HttpError(400, 'לא ניתן לאשר: יש גורמי תשתית שטרם אישרו');
   }
+  // החזרה לתיקון לגורם תשתית מסוים: חוות הדעת שלו נפתחת מחדש, הבקשה חוזרת לתיאום, והגורם מקבל התראה ואימייל עם הסיבה
+  if (to === 'returned' && req.body.return_to && req.body.return_to !== 'applicant') {
+    const aid = v.id(req.body.return_to, { required: true, name: 'למי מחזירים' });
+    const a = db.prepare(`SELECT ra.*, b.name AS body_name FROM request_approvals ra JOIN infra_bodies b ON b.id = ra.infra_body_id WHERE ra.id = ? AND ra.request_id = ?`).get(aid, r.id);
+    if (!a) throw new sec.ValidationError('הגורם שנבחר אינו משויך לבקשה');
+    // החזרה מהשלב האחרון (אישור מנהל המערכת): אחרי שהגורם מתקן ומאשר – הבקשה מאושרת אוטומטית, בלי בדיקה חוזרת של התיקון
+    const autoApprove = r.status === 'pending_admin' && isSysAdmin(req) && req.body.auto_approve !== false;
+    tx(() => {
+      db.prepare("UPDATE request_approvals SET decision = 'pending', decided_by = NULL, decided_at = NULL, notified_at = ? WHERE id = ?").run(nowIso(), a.id);
+      db.prepare("UPDATE requests SET status = 'coordination', fix_auto_approval = ?, fix_auto_by = ?, updated_at = ? WHERE id = ?").run(autoApprove ? a.id : null, autoApprove ? req.user.id : null, nowIso(), r.id);
+      history(r.id, req.user.id, `הוחזרה לתיקון אל ${a.body_name}`, comment + (autoApprove ? '\nאחרי התיקון הבקשה תאושר אוטומטית, בלי בדיקה חוזרת.' : ''));
+    });
+    const users = db.prepare('SELECT id, full_name, email FROM users WHERE infra_body_id = ? AND active = 1').all(a.infra_body_id);
+    for (const u of users) notify(u.id, `בקשה ${r.number} הוחזרה אליכם לבדיקה: ${comment}`, `#/requests/${r.id}`);
+    mailUsers(users, `בקשה ${r.number} הוחזרה אליכם לבדיקה – ${sysTitle()}`,
+      `שלום,\n\nבקשה ${r.number} (${r.title}) הוחזרה אליכם (${a.body_name}) לבדיקה חוזרת על ידי ${req.user.full_name}.\n\nסיבת ההחזרה:\n${comment}\n\nלכניסה לבקשה ולמתן חוות דעת מעודכנת:\n${linkTo(r.id)}\n\n${sysTitle()}`);
+    audit(req, 'request_returned_to_body', { id: r.id, approval: a.id });
+    return { ok: true, returned_to: a.body_name, auto_approve: autoApprove };
+  }
   const sets = { status: to, updated_at: nowIso() };
   if (to === 'submitted') { sets.submitted_at = nowIso(); sets.due_at = addDays(slaDays(r.track, r.track_status)); }
   if (to === 'closed' || to === 'approved' || to === 'rejected') sets.closed_at = nowIso();
@@ -437,6 +459,11 @@ route('POST', '/api/requests/:id/status', async (req) => {
   if (r.applicant_id !== req.user.id) notify(r.applicant_id, `בקשה ${r.number}: ${W.STATUSES[to]}`, `#/requests/${r.id}`);
   if (r.assignee_id && r.assignee_id !== req.user.id) notify(r.assignee_id, `בקשה ${r.number}: ${W.STATUSES[to]}`, `#/requests/${r.id}`);
   if (to === 'submitted' && !r.assignee_id) notifyPerm('requests.assign', `בקשה הוגשה: ${r.number}`, `#/requests/${r.id}`, req.user.id);
+  if (to === 'returned') {
+    const ap = db.prepare('SELECT id, full_name, email FROM users WHERE id = ?').get(r.applicant_id);
+    if (ap && ap.id !== req.user.id) mailUsers([ap], `בקשה ${r.number} הוחזרה אליך לתיקון – ${sysTitle()}`,
+      `שלום ${ap.full_name},\n\nבקשה ${r.number} (${r.title}) הוחזרה אליך לתיקון על ידי ${req.user.full_name}.\n\nסיבת ההחזרה:\n${comment}\n\nלכניסה לבקשה:\n${linkTo(r.id)}\n\n${sysTitle()}`);
+  }
   if (to === 'pending_admin') notifySysAdmins(`בקשה ${r.number} ממתינה לאישורך הסופי`, `#/requests/${r.id}`, req.user.id);
   audit(req, 'request_status', { id: r.id, from: r.status, to });
   if (to === 'review' || to === 'coordination') notifyTurn(r.id);
@@ -493,7 +520,7 @@ route('POST', '/api/requests/:id/approvals', (req) => {
   return { ok: true };
 });
 
-route('POST', '/api/approvals/:id/decide', (req) => {
+route('POST', '/api/approvals/:id/decide', async (req) => {
   requirePerm(req, 'approvals.decide');
   const a = db.prepare('SELECT * FROM request_approvals WHERE id = ?').get(req.params.id);
   if (!a) throw new HttpError(404, 'לא נמצא');
@@ -517,8 +544,18 @@ route('POST', '/api/approvals/:id/decide', (req) => {
   let advanced = false;
   if (['review', 'coordination'].includes(r.status)) {
     const left = db.prepare(`SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision NOT IN ${DONE}`).get(r.id).c;
+    const fixer = r.fix_auto_approval === a.id && decision !== 'rejected' && r.fix_auto_by ? db.prepare('SELECT * FROM users WHERE id = ? AND active = 1').get(r.fix_auto_by) : null;
+    if (!left && fixer) {
+      // התיקון בוצע: מאשרים אוטומטית בשם מנהל המערכת שהחזיר, ומפיקים את מסמך האישור
+      db.prepare("UPDATE requests SET status = 'approved', closed_at = ?, fix_auto_approval = NULL, fix_auto_by = NULL, updated_at = ? WHERE id = ?").run(nowIso(), nowIso(), r.id);
+      history(r.id, null, `${body.name} תיקן ואישר – הבקשה אושרה אוטומטית, בלי בדיקה חוזרת`, null);
+      notify(fixer.id, `בקשה ${r.number}: ${body.name} תיקן – הבקשה אושרה אוטומטית והמסמך נשלח למגיש`, `#/requests/${r.id}`);
+      audit(req, 'request_auto_approved_after_fix', { id: r.id, approval: a.id }, 'notice');
+      const doc = await issueApproval(new Proxy(req, { get: (t, k) => (k === 'user' ? fixer : Reflect.get(t, k, t)) }), r.id, `אושר לאחר תיקון של ${body.name}`);
+      return { ok: true, advanced: true, approved: true, approval_doc: doc };
+    }
     if (!left) {
-      db.prepare("UPDATE requests SET status = 'pending_admin', updated_at = ? WHERE id = ?").run(nowIso(), r.id);
+      db.prepare("UPDATE requests SET status = 'pending_admin', fix_auto_approval = NULL, fix_auto_by = NULL, updated_at = ? WHERE id = ?").run(nowIso(), r.id);
       history(r.id, null, 'כל גורמי התשתית אישרו – הבקשה הועברה אוטומטית לאישור מנהל המערכת', null);
       notifySysAdmins(`בקשה ${r.number}: כל גורמי התשתית אישרו – ממתינה לאישורך הסופי`, `#/requests/${r.id}`);
       notify(r.applicant_id, `בקשה ${r.number}: כל גורמי התשתית אישרו – ממתינה לאישור מנהל המערכת`, `#/requests/${r.id}`);
@@ -587,7 +624,7 @@ function loadDoc(req) {
 route('GET', '/api/documents', (req) => {
   requireAuth(req);
   const rows = db.prepare(`SELECT d.id, d.request_id, d.category, d.visibility, d.original_name, d.size, d.mime, d.created_at, d.uploaded_by,
-    u.full_name AS uploaded_by_name, r.number AS request_number
+    u.full_name AS uploaded_by_name, r.number AS request_number, r.title AS request_title, r.status AS request_status
     FROM documents d JOIN users u ON u.id = d.uploaded_by JOIN requests r ON r.id = d.request_id ORDER BY d.id DESC LIMIT 1000`).all();
   return { items: rows.filter(d => canSeeDoc(req, d)), ownOnly: docsOwnOnly() && !isSysAdmin(req) && !can(req, 'requests.mapping') };
 });
@@ -927,7 +964,7 @@ route('GET', '/api/admin/settings', (req) => {
     sla_regular_days: +getSetting('sla.regular_days'), sla_fast_days: +getSetting('sla.fast_days'),
     org_name: getSetting('org.name'), system_title: getSetting('org.system_title'),
     req_prefix: getSetting('requests.prefix'), req_with_year: getSetting('requests.with_year') === '1', req_pad: +getSetting('requests.pad'),
-    guidelines: getSetting('approval.guidelines') || '', public_apply: getSetting('public.apply') !== '0',
+    govmap_token: getSetting('govmap.token') || '', govmap_env: !!config.govmapToken, guidelines: getSetting('approval.guidelines') || '', login_heading: getSetting('login.heading') || '', login_text: getSetting('login.text') || '', public_apply: getSetting('public.apply') !== '0',
     req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'), docs_visibility: docsOwnOnly() ? 'own' : 'request',
   };
 });
@@ -948,6 +985,9 @@ route('PUT', '/api/admin/settings', (req) => {
   if (b.sla_fast_days !== undefined) setSetting('sla.fast_days', v.num(b.sla_fast_days, { min: 1, max: 60, name: 'ימי טיפול במסלול מזורז' }));
   if (b.org_name !== undefined) setSetting('org.name', v.str(b.org_name, { max: 100, required: true, name: 'שם הארגון' }));
   if (b.system_title !== undefined) setSetting('org.system_title', v.str(b.system_title, { max: 100, required: true, name: 'שם המערכת' }));
+  if (b.login_heading !== undefined) setSetting('login.heading', v.str(b.login_heading, { max: 120, name: 'כותרת מסך הכניסה' }) || '');
+  if (b.login_text !== undefined) setSetting('login.text', v.str(b.login_text, { max: 600, name: 'תיאור במסך הכניסה' }) || '');
+  if (b.govmap_token !== undefined) setSetting('govmap.token', v.str(b.govmap_token, { max: 400, name: 'מפתח GovMap', pattern: /^[A-Za-z0-9._\-=+/]*$/ }) || '');
   if (b.guidelines !== undefined) setSetting('approval.guidelines', v.str(b.guidelines, { max: 8000, name: 'הנחיות' }) || '');
   if (b.public_apply !== undefined) setSetting('public.apply', b.public_apply ? '1' : '0');
   if (b.docs_visibility !== undefined) setSetting('docs.visibility', v.oneOf(b.docs_visibility, ['own', 'request'], { required: true, name: 'חשיפת מסמכים' }));
@@ -1065,6 +1105,33 @@ route('GET', '/api/logo', async (req, res) => {
 
 // ---------------- הגשת בקשה מהציבור (תושב/ת או יזם) ----------------
 const KINDS = { resident: 'תושב/ת', entrepreneur: 'יזם' };
+// ---- מיקום (GovMap, קואורדינטות רשת ישראל החדשה ITM) ----
+const KG_CENTER = { x: 177750, y: 613200, level: 6 }; // מרכז קריית גת
+const govmapToken = () => config.govmapToken || getSetting('govmap.token') || '';
+function locationField(raw, { required = true } = {}) {
+  let o = raw;
+  if (typeof raw === 'string') { if (!raw.trim()) o = null; else { try { o = JSON.parse(raw); } catch { throw new sec.ValidationError('מיקום: נתונים לא תקינים'); } } }
+  if (!o) { if (required) throw new sec.ValidationError('מיקום: יש לסמן את מיקום העבודה במפה'); return null; }
+  if (typeof o !== 'object' || Array.isArray(o)) throw new sec.ValidationError('מיקום: נתונים לא תקינים');
+  const x = Number(o.x), y = Number(o.y), z = o.z === undefined || o.z === null || o.z === '' ? 9 : Number(o.z);
+  // גבולות רשת ישראל: מחוץ להם זה לא מיקום בישראל
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 100000 || x > 300000 || y < 350000 || y > 820000) throw new sec.ValidationError('מיקום: הנקודה שסומנה אינה בתחומי ישראל');
+  if (!Number.isFinite(z) || z < 0 || z > 10) throw new sec.ValidationError('מיקום: רמת תקריב לא תקינה');
+  return { x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, z: Math.round(z * 10) / 10, label: v.str(o.label, { max: 300, name: 'תיאור המיקום' }) };
+}
+const govmapLink = (x, y, z = 9) => `https://www.govmap.gov.il/?c=${x},${y}&z=${z}`;
+route('GET', '/api/public/map-config', () => ({ token: govmapToken(), center: KG_CENTER }));
+route('PUT', '/api/requests/:id/location', (req) => {
+  requireAuth(req);
+  const r = loadRequest(req.params.id); assertView(req, r);
+  if (!canEditRequest(req, r) && !can(req, 'requests.mapping') && !can(req, 'requests.assign')) throw new HttpError(403, 'אין הרשאה לעדכן את המיקום');
+  const loc = locationField(req.body.location);
+  db.prepare('UPDATE requests SET loc_x = ?, loc_y = ?, loc_z = ?, loc_label = ?, updated_at = ? WHERE id = ?').run(loc.x, loc.y, loc.z, loc.label, nowIso(), r.id);
+  history(r.id, req.user.id, 'עודכן מיקום העבודה', `${loc.x}, ${loc.y}${loc.label ? ' – ' + loc.label : ''}`);
+  audit(req, 'request_location', { id: r.id });
+  return { ok: true };
+});
+
 const ROUTE_EXT = ['pdf', 'dwf'];
 const WORKREQ_EXT = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png'];
 function validIsraeliId(id) {
@@ -1113,7 +1180,7 @@ function safePublicRole(role) { return !role.system && !JSON.parse(role.perms).s
 route('GET', '/api/public/apply-meta', () => {
   const on = getSetting('public.apply') !== '0';
   return { enabled: on, types: on ? typesAll().filter(t => t.active && t.public).map(t => ({ key: t.key, name: t.name, description: t.description || '' })) : [],
-    maxMb: Math.round(up.maxBytes() / 1048576), routeExt: ROUTE_EXT, workExt: WORKREQ_EXT };
+    maxMb: Math.round(up.maxBytes() / 1048576), routeExt: ROUTE_EXT, workExt: WORKREQ_EXT, map: !!govmapToken(), center: KG_CENTER };
 });
 
 route('POST', '/api/public/apply', async (req, res) => {
@@ -1135,6 +1202,7 @@ route('POST', '/api/public/apply', async (req, res) => {
   const address = v.str(f.address, { required: true, max: 300, name: 'כתובת מגורים' });
   const phone = phoneField(f.phone, 'פלאפון');
   const project = v.str(f.project, { required: true, max: 200, name: 'פרויקט' });
+  const loc = locationField(f.location);
   const police = policeFields(f.police);
   const routeFile = files.find(x => x.name === 'route_plan'); const workFile = files.find(x => x.name === 'work_request');
   if (!routeFile) throw new sec.ValidationError('תוכנית תוואי: יש לצרף קובץ PDF או DWF');
@@ -1159,9 +1227,9 @@ route('POST', '/api/public/apply', async (req, res) => {
       const userId = Number(u.lastInsertRowid);
       const number = nextRequestNumber();
       const title = `${type.name} – ${project}`.slice(0, 200);
-      const rq = db.prepare(`INSERT INTO requests (number, type, title, description, project_name, applicant_id, assignee_id, status, track, track_status, applicant_kind, planned_start, submitted_at, due_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', 'regular', 'none', ?, ?, ?, ?)`)
-        .run(number, type.key, title, police.description, project, userId, handlers[0] || null, kind, police.date, nowIso(), addDays(slaDays('regular', 'none')));
+      const rq = db.prepare(`INSERT INTO requests (number, type, title, description, project_name, address, loc_x, loc_y, loc_z, loc_label, applicant_id, assignee_id, status, track, track_status, applicant_kind, planned_start, submitted_at, due_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', 'regular', 'none', ?, ?, ?, ?)`)
+        .run(number, type.key, title, police.description, project, loc.label, loc.x, loc.y, loc.z, loc.label, userId, handlers[0] || null, kind, police.date, nowIso(), addDays(slaDays('regular', 'none')));
       const requestId = Number(rq.lastInsertRowid);
       for (const h of handlers) db.prepare('INSERT OR IGNORE INTO user_requests (user_id, request_id) VALUES (?, ?)').run(h, requestId);
       chain.forEach((bid, i) => db.prepare('INSERT OR IGNORE INTO request_approvals (request_id, infra_body_id, seq) VALUES (?, ?, ?)').run(requestId, bid, i + 1));
