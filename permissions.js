@@ -13,6 +13,7 @@ const PERMISSIONS = [
   { key: 'requests.approve_track', group: 'בקשות תיאום', label: 'אישור מסלול (רגיל / מזורז)' },
   { key: 'requests.final_approve', group: 'בקשות תיאום', label: 'מתן אישור סופי (תכנון / ביצוע / גמר)' },
   { key: 'approvals.decide', group: 'בקשות תיאום', label: 'מתן חוות דעת גורם תשתית' },
+  { key: 'requests.mapping', group: 'בקשות תיאום', label: 'אחראי מיפוי בקשות: קבלת בקשות חדשות מהציבור, הזנת גורמים, צפייה בכל המסמכים כולל טופס משטרה' },
   // קבצים
   { key: 'files.upload', group: 'מסמכים וקבצים', label: 'העלאת קבצים' },
   { key: 'files.download', group: 'מסמכים וקבצים', label: 'הורדת קבצים' },
@@ -41,6 +42,8 @@ const DEFAULT_ROLES = [
   { name: 'רכז תיאום', system: 0, perms: ['requests.view_all', 'requests.create', 'requests.edit_all', 'requests.assign', 'requests.change_status', 'files.upload', 'files.download', 'files.delete_own', 'projects.view', 'tasks.view', 'tasks.manage', 'budget.view'] },
   { name: 'גורם תשתית', system: 0, perms: ['requests.view_own', 'approvals.decide', 'files.upload', 'files.download', 'files.delete_own', 'tasks.view'] },
   { name: 'מבקש / יזם', system: 0, perms: ['requests.view_own', 'requests.create', 'requests.edit_own', 'files.upload', 'files.download', 'files.delete_own'] },
+  { name: 'תושב/ת', system: 0, perms: ['requests.view_own', 'requests.create', 'files.upload', 'files.download', 'files.delete_own'] },
+  { name: 'יזם', system: 0, perms: ['requests.view_own', 'requests.create', 'requests.edit_own', 'files.upload', 'files.download', 'files.delete_own'] },
 ];
 
 module.exports = { PERMISSIONS, KEYS, DEFAULT_ROLES };

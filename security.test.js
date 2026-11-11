@@ -12,6 +12,7 @@ const results = [];
 function rec(area, name, pass, detail = '') { results.push({ area, name, pass: !!pass, detail: String(detail).slice(0, 300) }); console.log(`${pass ? 'PASS' : 'FAIL'}  [${area}] ${name}${detail ? ' – ' + detail : ''}`); }
 const rnd = () => crypto.randomInt(1, 254);
 const pw = () => 'Tst' + crypto.randomBytes(9).toString('base64url') + '7a';
+const APPLY_PW = 'סיסמה' + crypto.randomBytes(6).toString('hex') + '9';
 
 function startServer(env, port) {
   return new Promise((resolve, reject) => {
@@ -214,14 +215,16 @@ class Client {
     const myAppr = det.approvals.find(a => a.infra_body_id === infra[0].id); const otherAppr = det.approvals.find(a => a.infra_body_id === infra[1].id);
     r = await users.water.c.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
     rec('הרשאות', 'גורם תשתית לא יכול להחליט בשם גורם אחר', r.status === 403);
+    r = await admin.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
+    rec('סדר טיפול', 'הגורם השני לא יכול לאשר לפני שהראשון סיים (409), גם לא מנהל המערכת', r.status === 409, r.data.error);
+    rec('סדר טיפול', 'הגורם הראשון בתור קיבל התראה שהגיע תורו', !!db.prepare("SELECT 1 FROM notifications n WHERE n.user_id = ? AND n.text LIKE '%ממתינה לחוות דעת%'").get(users.water.id));
     r = await users.water.c.req('POST', `/api/approvals/${myAppr.id}/decide`, { decision: 'approved' });
     r = await E.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
     rec('אישור מנהל', 'מהנדס לא יכול לתת חוות דעת בשם גורם תשתית (רק הגורם עצמו או מנהל המערכת)', r.status === 403);
-    await admin.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'conditions', comment: 'עבודה בלילה בלבד' });
-    rec('תהליך', 'אישור "בתנאים" אינו נחשב אישור מלא – הבקשה נשארת בתיאום', db.prepare('SELECT status FROM requests WHERE id = ?').get(reqId).status === 'coordination');
-    r = await admin.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'approved' });
+    rec('סדר טיפול', 'כשהגורם הראשון סיים – נרשם בהיסטוריה שהתור עבר לגורם הבא', !!db.prepare("SELECT 1 FROM request_history WHERE request_id = ? AND action LIKE 'התור עבר ל%'").get(reqId) && db.prepare('SELECT notified_at FROM request_approvals WHERE id = ?').get(otherAppr.id).notified_at !== null);
+    r = await admin.req('POST', `/api/approvals/${otherAppr.id}/decide`, { decision: 'conditions', comment: 'עבודה בלילה בלבד' });
     const st1 = db.prepare('SELECT status FROM requests WHERE id = ?').get(reqId).status;
-    rec('אישור מנהל', 'כשהגורם האחרון מאשר – הבקשה עוברת אוטומטית ל"ממתינה לאישור מנהל המערכת"', r.data.advanced === true && st1 === 'pending_admin', st1);
+    rec('אישור מנהל', 'כשהגורם האחרון מאשר (גם "בתנאים") – הבקשה עוברת אוטומטית ל"ממתינה לאישור מנהל המערכת"', r.data.advanced === true && st1 === 'pending_admin', st1);
     rec('אישור מנהל', 'מנהל המערכת מקבל התראה על הבקשה שממתינה לו', !!db.prepare("SELECT 1 FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'chief' AND n.text LIKE '%ממתינה לאישורך%'").get());
     r = await E.req('POST', `/api/requests/${reqId}/status`, { status: 'approved' });
     const r2b = await A.req('POST', `/api/requests/${reqId}/status`, { status: 'approved' });
@@ -230,8 +233,19 @@ class Client {
     rec('אישור מנהל', 'הבקשה מופיעה למנהל ב"ממתין לטיפולי"', pend.data.items.some(x => x.id === reqId));
     r = await admin.req('POST', `/api/requests/${reqId}/status`, { status: 'approved', comment: 'מאושר לביצוע' });
     rec('תהליך', 'מסלול מלא: הגשה ← בדיקה ← תיאום ← אישורי גורמים ← אישור מנהל המערכת', r.status === 200);
-    r = await E.req('POST', `/api/requests/${reqId}/status`, { status: 'closed' });
-    rec('אישור מנהל', 'רק מנהל המערכת סוגר בקשה', r.status === 403);
+    const fin = db.prepare('SELECT status, closed_at FROM requests WHERE id = ?').get(reqId);
+    r = await admin.req('POST', `/api/requests/${reqId}/status`, { status: 'closed' });
+    rec('אישור מנהל', 'אישור מנהל המערכת מסיים את הבקשה – אין שלב סגירה נוסף', fin.status === 'approved' && !!fin.closed_at && r.status === 400);
+    const apDoc = db.prepare("SELECT * FROM documents WHERE request_id = ? AND category = 'אישור לביצוע עבודה'").get(reqId);
+    const apBuf = apDoc ? fs.readFileSync(path.join(dataDir, 'uploads', apDoc.stored_name)) : Buffer.alloc(0);
+    rec('מסמך אישור', 'באישור הסופי הופק מסמך PDF לבקשה, משותף לכל המעורבים', !!apDoc && apDoc.visibility === 'shared' && apBuf.subarray(0, 5).toString() === '%PDF-');
+    const apView = await A.req('GET', `/api/requests/${reqId}`);
+    const apDl = await A.req('GET', `/api/documents/${apDoc.id}/download`, undefined, { raw: true });
+    rec('מסמך אישור', 'המגיש רואה ומוריד את מסמך האישור בבקשה שלו', apView.data.approvalDoc && apView.data.approvalDoc.id === apDoc.id && apDl.status === 200, `view ${apView.status} doc ${JSON.stringify(apView.data.approvalDoc)} dl ${apDl.status} ${apView.data.error || ''}`);
+    let pdfText = '';
+    try { const tmpP = path.join(os.tmpdir(), 'coord-ap.pdf'); fs.writeFileSync(tmpP, apBuf); pdfText = execFileSync('pdftotext', [tmpP, '-']).toString(); } catch { pdfText = ''; }
+    const rqNum = db.prepare('SELECT number FROM requests WHERE id = ?').get(reqId).number;
+    rec('מסמך אישור', 'המסמך כולל מספר בקשה, גורמים מאשרים ותנאים, וטקסט עברי קריא', pdfText.includes(rqNum) && pdfText.includes('עבודה בלילה בלבד') && pdfText.includes('הבקשה אושרה'), pdfText ? 'טקסט חולץ מה-PDF' : 'pdftotext לא זמין');
     r = await A.req('GET', '/api/notifications');
     rec('תהליך', 'המגיש מקבל התראות על שינויי סטטוס', r.data.items.length >= 3, r.data.items.length + ' התראות');
 
@@ -366,14 +380,14 @@ class Client {
       const engView = await E2.req('GET', `/api/requests/${reqId}`);
       const applView = await A2.req('GET', `/api/requests/${reqId}`);
       const adminView = await admin.req('GET', `/api/requests/${reqId}`);
-      const names = (x) => x.data.documents.map(d => d.original_name);
+      const names = (x) => x.data.documents.filter(d => d.visibility !== 'shared').map(d => d.original_name);
       rec('מסמכים', 'כל משתמש רואה רק את המסמכים שהעלה; מנהל המערכת רואה את כולם',
         names(engView).every(n => n === 'eng-plan.pdf') && !names(applView).includes('eng-plan.pdf') && names(applView).includes('appl-plan.pdf') && names(adminView).includes('eng-plan.pdf') && names(adminView).includes('appl-plan.pdf'),
         `מהנדס: ${names(engView).length}, מבקש: ${names(applView).length}, מנהל: ${names(adminView).length}`);
       const steal = await A2.req('GET', `/api/documents/${ed.data.id}/download`);
       rec('מסמכים', 'הורדה ישירה של מסמך של משתמש אחר נחסמת (404)', steal.status === 404);
       const allDocs = await E2.req('GET', '/api/documents');
-      rec('מסמכים', 'גם במסך "מסמכים" מופיעים רק המסמכים שלי', allDocs.data.items.every(d => d.uploaded_by === users.eng.id));
+      rec('מסמכים', 'גם במסך "מסמכים" מופיעים רק המסמכים שלי (ומסמך האישור המשותף)', allDocs.data.items.every(d => d.uploaded_by === users.eng.id || d.visibility === 'shared'));
       await admin.req('PUT', '/api/admin/settings', { docs_visibility: 'request' });
       const shared = await E2.req('GET', `/api/requests/${reqId}`);
       rec('מסמכים', 'מתג בהגדרות: "כל מי שרואה את הבקשה רואה את המסמכים" עובד', names(shared).includes('appl-plan.pdf'));
@@ -389,7 +403,7 @@ class Client {
     r = await anon.req('POST', '/api/auth/login', { username: "chief' --", password: 'x' });
     rec('SQL Injection', 'הזרקות בחיפוש ובכניסה אינן משפיעות (queries parameterized)', sqli.length === 0 && r.status !== 200 && db.prepare('SELECT COUNT(*) c FROM users').get().c > 0, sqli.join(' | ') || '5 מטענים נבדקו');
     const src = fs.readFileSync(path.join(ROOT, 'routes.js'), 'utf8');
-    const concat = src.split('\n').filter(l => /prepare\(`[^`]*\$\{(?!where|REQ_SELECT|PROJ_SELECT|cols\.map|mine \?)/.test(l));
+    const concat = src.split('\n').filter(l => /prepare\(`[^`]*\$\{(?!where|REQ_SELECT|PROJ_SELECT|cols\.map|mine \?|DONE\}|table\})/.test(l));
     rec('SQL Injection', 'סריקת קוד: אין שרשור קלט משתמש לשאילתות', concat.length === 0, concat.length ? concat[0].trim().slice(0, 100) : 'רק שמות עמודות קבועים משורשרים; כל הערכים כ-?');
 
     // ---------- תקציב: אימות סכומים ----------
@@ -607,6 +621,119 @@ class Client {
       await new Promise(res => setTimeout(res, 4500));
       rec('ענן', 'כשהענן לא זמין בהפעלה – השרת לא דורס את העותק השמור במסד ריק', Buffer.compare(store.get('db/app.sqlite'), snap) === 0 && !store.has('db/app.sqlite.tmp'), `העלאות אחרי התקלה: ${puts - putsBefore}`);
       srv.kill('SIGTERM'); await new Promise(res => srv.on('exit', res)); mock.close();
+    }
+
+    // ---------- מופע 5: הגשת בקשה מהציבור + סדר טיפול + דוא"ל ----------
+    {
+      const net = require('node:net'); const mails = [];
+      const smtp = net.createServer(sock => {
+        let data = false; let body = ''; let rcpt = '';
+        sock.write('220 test ESMTP\r\n');
+        sock.on('data', d => { for (const line of d.toString().split('\r\n')) {
+          if (data) { if (line === '.') { data = false; mails.push({ to: rcpt, body }); sock.write('250 ok\r\n'); } else body += line + '\n'; continue; }
+          if (/^EHLO/i.test(line)) sock.write('250-test\r\n250 8BITMIME\r\n');
+          else if (/^RCPT/i.test(line)) { rcpt = (line.match(/<([^>]+)>/) || [])[1]; sock.write('250 ok\r\n'); }
+          else if (/^MAIL/i.test(line)) sock.write('250 ok\r\n');
+          else if (/^DATA/i.test(line)) { data = true; body = ''; sock.write('354 go\r\n'); }
+          else if (/^QUIT/i.test(line)) { sock.write('221 bye\r\n'); sock.end(); }
+        } });
+      });
+      await new Promise(res => smtp.listen(4827, '127.0.0.1', res));
+      const d5 = fs.mkdtempSync(path.join(os.tmpdir(), 'coord-apply-'));
+      const env5 = { NODE_ENV: 'production', FORCE_HTTPS: '0', TRUST_PROXY: '1', DATA_DIR: d5, UPLOAD_DIR: path.join(d5, 'u'), BACKUP_DIR: path.join(d5, 'b'), LOG_DIR: path.join(d5, 'l'),
+        SMTP_HOST: '127.0.0.1', SMTP_PORT: '4827', SMTP_ALLOW_INSECURE: '1', MAIL_FROM: 'no-reply@example.gov.il', ADMIN_USERNAME: 'root5', ADMIN_FULLNAME: 'מנהלת המערכת', ADMIN_PASSWORD: adminPw };
+      srv = await startServer(env5, 4805);
+      const b5 = 'http://127.0.0.1:4805';
+      const db5 = new (require('node:sqlite').DatabaseSync)(path.join(d5, 'app.db'));
+      db5.prepare("UPDATE users SET email = 'admin@example.gov.il' WHERE username = 'root5'").run();
+      const ad = new Client(b5); r = await ad.login('root5', adminPw); ad.csrf = r.data.csrf;
+      const roles5 = (await ad.req('GET', '/api/admin/roles')).data.items; const rid5 = n => roles5.find(x => x.name === n).id;
+      const infra5 = (await ad.req('GET', '/api/admin/infra')).data.items;
+      const mk = async (username, extra) => { const p = pw(); const c = await ad.req('POST', '/api/admin/users', { username, full_name: 'משתמש ' + username, password: p, no_request: true, ...extra });
+        db5.prepare('UPDATE users SET must_change_pw = 0 WHERE id = ?').run(c.data.id); const cl = new Client(b5); const l = await cl.login(username, p); cl.csrf = l.data.csrf; return { id: c.data.id, c: cl }; };
+      const mapper = await mk('mapper', { role_id: rid5('רכז תיאום'), email: 'mapper@example.gov.il', no_infra: true });
+      await ad.req('PUT', `/api/admin/users/${mapper.id}`, { perm_grant: ['requests.mapping'] }); { const l = await mapper.c.login('mapper', null); }
+      const mp = pw(); await ad.req('POST', `/api/admin/users/${mapper.id}/password`, { password: mp, must_change: false }); { const l = await mapper.c.login('mapper', mp); mapper.c.csrf = l.data.csrf; }
+      const b1 = await mk('body.one', { role_id: rid5('גורם תשתית'), email: 'b1@example.gov.il', infra_body_id: infra5[0].id });
+      const b2 = await mk('body.two', { role_id: rid5('גורם תשתית'), email: 'b2@example.gov.il', infra_body_id: infra5[1].id });
+      const handler = await mk('handler', { role_id: rid5('מהנדס / מאשר'), email: 'handler@example.gov.il', no_infra: true });
+      // סוג בקשה עם מטפל, סדר גורמים ותפקיד ייעודי ליזם
+      const ent = await ad.req('POST', '/api/admin/roles', { name: 'יזם – עבודות בדרכים', perms: ['requests.view_own', 'requests.create', 'files.upload', 'files.download'] });
+      const badRole = await ad.req('POST', '/api/admin/request-types', { name: 'ניסיון', role_resident: rid5('מנהל מערכת') });
+      rec('סוגי בקשות', 'אי אפשר לתת לנרשמים מהציבור תפקיד עם הרשאות ניהול', badRole.status === 400, badRole.data.error);
+      const ty = await ad.req('POST', '/api/admin/request-types', { name: 'עבודות בדרכים', description: 'חפירה, הנחת קווים ותיקונים בשטח ציבורי', handler_ids: [handler.id], infra_chain: [infra5[0].id, infra5[1].id], role_entrepreneur: ent.data.id });
+      const meta = await new Client(b5).req('GET', '/api/public/apply-meta');
+      const tKey = meta.data.types.find(t => t.name === 'עבודות בדרכים').key;
+      rec('סוגי בקשות', 'סוג בקשה שהוגדר בלוח הבקרה מופיע בטופס הציבורי עם התיאור', ty.status === 201 && !!tKey && meta.data.types.find(t => t.key === tKey).description.includes('חפירה'));
+      const pdfBuf = Buffer.from('%PDF-1.4\n% route plan\n%%EOF'); const dwf = Buffer.concat([Buffer.from('(DWF V06.00)'), Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(40, 1)]);
+      const police = { applicant_name: 'ישראל ישראלי', project: 'שדרוג קווי ביוב', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'חפירה ברחוב הגפן', work_time: 'ימים א׳-ה׳', work_hours: '07:00-19:00', contact: 'דני 052-7654321', notes: '', date: '2026-12-01' };
+      const apply = (ip, over = {}, files = {}) => {
+        const fd = new FormData();
+        const base = { kind: 'entrepreneur', username: 'ישראל ישראלי', password: APPLY_PW, type: tKey, email: 'israel@example.com', address: 'הגפן 3, קריית גת', phone: '0501234567', project: 'שדרוג קווי ביוב', police: JSON.stringify(police), ...over };
+        for (const [k, v2] of Object.entries(base)) if (v2 !== undefined) fd.append(k, v2);
+        const fl = { route_plan: ['plan.dwf', dwf], work_request: ['request.pdf', pdfBuf], ...files };
+        for (const [k, v2] of Object.entries(fl)) if (v2) fd.append(k, new Blob([v2[1]]), v2[0]);
+        return new Client(b5, ip).req('POST', '/api/public/apply', fd);
+      };
+      const neg = [];
+      for (const [desc, over, files] of [['שדה מלכודת', { website: 'spam' }], ['בלי טופס משטרה', { police: undefined }], ['ת.ז שגויה', { police: JSON.stringify({ ...police, id_number: '123456789' }) }],
+        ['טלפון שגוי', { phone: '12345' }], ['אימייל שגוי', { email: 'not-mail' }], ['סוג בקשה לא קיים', { type: 'nope' }], ['בלי תוכנית תוואי', {}, { route_plan: null }],
+        ['תוכנית DWG (רק PDF/DWF)', {}, { route_plan: ['plan.dwg', Buffer.from('AC1032 dwg')] }], ['HTML שמתחזה ל-PDF', {}, { work_request: ['x.pdf', Buffer.from('<html><script>alert(1)</script>')] }],
+        ['שם משתמש עם תו כיווניות', { username: 'ישראל‮abc' }], ['סיסמה חלשה', { password: '1234' }]]) {
+        const x = await apply(`10.50.0.${neg.length + 1}`, over, files); if (x.status < 400) neg.push(`${desc}:${x.status}`);
+      }
+      rec('הגשה מהציבור', '11 הגשות לא תקינות נדחות בשרת (מלכודת, משטרה, ת.ז, טלפון, אימייל, סוג, קבצים, שם, סיסמה)', neg.length === 0, neg.join(', '));
+      const ok = await apply('10.60.0.1');
+      rec('הגשה מהציבור', 'יזם מגיש בקשה עם שם משתמש בעברית ומקבל מספר בקשה', ok.status === 201 && /^TH-\d{4}-\d{4}$/.test(ok.data.number), `${ok.status} ${ok.data.number || ok.data.error}`);
+      const dup = await apply('10.60.0.2');
+      rec('הגשה מהציבור', 'שם משתמש תפוס נדחה', dup.status === 400 && /תפוס/.test(dup.data.error));
+      let lim = 0; for (let i = 0; i < 6; i++) { const x = await apply('10.70.0.9', { username: 'ניסיון' + i }); if (x.status === 429) lim++; }
+      rec('הגשה מהציבור', 'הגבלה: עד 5 הגשות בשעה מאותה כתובת', lim >= 1);
+      const reqId5 = ok.data.id; const nu = db5.prepare("SELECT u.*, r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.username = 'ישראל ישראלי'").get();
+      rec('הגשה מהציבור', 'המשתמש נוצר עם התפקיד שהוגדר ליזם בסוג הבקשה', nu && nu.role_name === 'יזם – עבודות בדרכים' && nu.applicant_kind === 'entrepreneur');
+      const rq5 = db5.prepare('SELECT * FROM requests WHERE id = ?').get(reqId5);
+      const chain5 = db5.prepare('SELECT infra_body_id, seq FROM request_approvals WHERE request_id = ? ORDER BY seq').all(reqId5);
+      rec('הגשה מהציבור', 'הבקשה הוקצתה אוטומטית למטפל של הסוג, וגורמי התשתית נקבעו לפי הסדר שהוגדר', rq5.assignee_id === handler.id && chain5.map(c => c.infra_body_id).join() === [infra5[0].id, infra5[1].id].join());
+      await new Promise(res => setTimeout(res, 600));
+      rec('הגשה מהציבור', 'אחראי המיפוי, המטפל ומנהל המערכת קיבלו דוא"ל והתראה על הבקשה החדשה', ['mapper@example.gov.il', 'handler@example.gov.il', 'admin@example.gov.il'].every(a => mails.some(m => m.to === a && m.body.includes('Subject:'))) && !!db5.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND text LIKE ?").get(mapper.id, '%' + ok.data.number + '%'));
+      rec('הגשה מהציבור', 'המגיש קיבל דוא"ל אישור קבלה עם מספר הבקשה', mails.some(m => m.to === 'israel@example.com'));
+      // טופס משטרה: מוגבל
+      const appl = new Client(b5, '10.60.0.1'); const al = await appl.login('ישראל ישראלי', APPLY_PW); appl.csrf = al.data.csrf;
+      const av = await appl.req('GET', `/api/requests/${reqId5}`);
+      const polDoc = db5.prepare("SELECT * FROM documents WHERE request_id = ? AND category = 'טופס משטרה'").get(reqId5);
+      const polDl = await appl.req('GET', `/api/documents/${polDoc.id}/download`);
+      const mv = await mapper.c.req('GET', `/api/requests/${reqId5}`);
+      const mpDl = await mapper.c.req('GET', `/api/documents/${polDoc.id}/download`, undefined, { raw: true });
+      const b1v = await b1.c.req('GET', `/api/documents/${polDoc.id}/download`);
+      rec('טופס משטרה', 'טופס המשטרה נשמר כ-PDF: גלוי רק למנהל המערכת ולאחראי מיפוי (לא למגיש ולא לגורם תשתית)',
+        !av.data.documents.some(d => d.category === 'טופס משטרה') && polDl.status === 404 && b1v.status === 404 && mv.data.documents.some(d => d.category === 'טופס משטרה') && mpDl.status === 200);
+      rec('הגשה מהציבור', 'המגיש מחובר אוטומטית ורואה את הבקשה, תוכנית התוואי ובקשת העבודה שלו', av.status === 200 && av.data.documents.filter(d => ['תוכנית תוואי', 'בקשת עבודה'].includes(d.category)).length === 2);
+      // סדר טיפול עם דוא"ל
+      mails.length = 0;
+      await mapper.c.req('POST', `/api/requests/${reqId5}/status`, { status: 'review' });
+      await new Promise(res => setTimeout(res, 500));
+      rec('סדר טיפול', 'כשהבקשה עוברת לבדיקה – רק הגורם הראשון בתור מקבל דוא"ל', mails.some(m => m.to === 'b1@example.gov.il') && !mails.some(m => m.to === 'b2@example.gov.il'));
+      const ap5 = db5.prepare('SELECT id, infra_body_id FROM request_approvals WHERE request_id = ? ORDER BY seq').all(reqId5);
+      r = await b2.c.req('POST', `/api/approvals/${ap5[1].id}/decide`, { decision: 'approved' });
+      rec('סדר טיפול', 'הגורם השני לא יכול לאשר לפני תורו', r.status === 409);
+      mails.length = 0;
+      await b1.c.req('POST', `/api/approvals/${ap5[0].id}/decide`, { decision: 'conditions', comment: 'קידוח אופקי בלבד מתחת למדרכה החדשה' });
+      await new Promise(res => setTimeout(res, 500));
+      const m2 = mails.find(m => m.to === 'b2@example.gov.il');
+      rec('סדר טיפול', 'כשהגורם הראשון סיים – הגורם הבא מקבל דוא"ל שעכשיו תורו', !!m2);
+      await b2.c.req('POST', `/api/approvals/${ap5[1].id}/decide`, { decision: 'approved' });
+      rec('סדר טיפול', 'אחרי הגורם האחרון – ממתינה לאישור מנהל המערכת', db5.prepare('SELECT status FROM requests WHERE id = ?').get(reqId5).status === 'pending_admin');
+      mails.length = 0;
+      r = await ad.req('POST', `/api/requests/${reqId5}/status`, { status: 'approved', comment: 'מאושר' });
+      await new Promise(res => setTimeout(res, 800));
+      const fm = mails.find(m => m.to === 'israel@example.com');
+      const hasPdf = !!fm && /Content-Type: application\/pdf/.test(fm.body) && /Content-Disposition: attachment/.test(fm.body);
+      let attOk = false;
+      if (hasPdf) { const part = fm.body.split(/Content-Disposition: attachment[^\n]*\n\n/)[1] || ''; const b64 = part.split(/\n--/)[0].replace(/\s+/g, ''); attOk = Buffer.from(b64, 'base64').subarray(0, 5).toString() === '%PDF-'; }
+      rec('מסמך אישור', 'באישור מנהל המערכת – המגיש מקבל דוא"ל עם מסמך האישור כקובץ PDF מצורף', r.status === 200 && hasPdf && attOk);
+      const av2 = await appl.req('GET', `/api/requests/${reqId5}`);
+      rec('מסמך אישור', 'מסמך האישור מופיע לפותח הבקשה בבקשה עצמה', !!av2.data.approvalDoc && av2.data.request.status === 'approved');
+      srv.kill('SIGTERM'); await new Promise(res => srv.on('exit', res)); smtp.close();
     }
 
     // ---------- מופע 2: HTTPS מחויב ----------

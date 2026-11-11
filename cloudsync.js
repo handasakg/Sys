@@ -7,10 +7,21 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const URL_ = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+// מקבל כל צורה נפוצה: כתובת מלאה, כתובת בלי https, או רק קוד הפרויקט (למשל abcdefghijklmnopqrst)
+function normalizeUrl(raw) {
+  let v = String(raw || '').trim().replace(/^["']|["']$/g, '');
+  if (!v) return '';
+  if (/^[a-z0-9]{15,40}$/i.test(v)) v = `https://${v.toLowerCase()}.supabase.co`;
+  else if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+  v = v.replace(/\/(rest|storage|auth)\/v1.*$/i, '').replace(/\/+$/, '');
+  try { const u = new URL(v); return u.origin; } catch { return ''; }
+}
+const URL_ = normalizeUrl(process.env.SUPABASE_URL);
+if (process.env.SUPABASE_URL && !URL_) console.error('[cloud] SUPABASE_URL לא תקין. דוגמה תקינה: https://abcdefghijklmnopqrst.supabase.co');
 const KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const BUCKET = process.env.SUPABASE_BUCKET || 'handasa';
 const enabled = !!(URL_ && KEY);
+if (URL_ && !KEY) console.error('[cloud] חסר SUPABASE_SERVICE_KEY – הסנכרון לענן כבוי');
 
 const state = { enabled, bucket: BUCKET, restore: null, lastSync: null, lastError: null, pending: false, blocked: false };
 
@@ -34,17 +45,23 @@ async function request(method, url, opts = {}, tries = 3) {
   throw last;
 }
 
+// הודעות שגיאה ברורות לטעויות הגדרה נפוצות. "קובץ לא קיים" מחזיר null (לא שגיאה)
+function explain(status, text, what) {
+  if (/bucket.{0,10}not.?found/i.test(text)) return new Error(`הדלי "${BUCKET}" לא קיים ב-Supabase. צרו ב-Storage דלי פרטי בשם ${BUCKET} (או תקנו את SUPABASE_BUCKET).`);
+  if (status === 401 || status === 403 || /invalid.{0,20}(jwt|key|signature)|unauthorized/i.test(text)) return new Error('המפתח ב-SUPABASE_SERVICE_KEY שגוי או חסר הרשאה. השתמשו במפתח ה-secret (או service_role), לא ב-anon/publishable.');
+  return new Error(`${what} נכשלה (${status}): ${text}`);
+}
 async function put(key, buf, contentType = 'application/octet-stream') {
   const res = await request('POST', objUrl(key), { headers: headers({ 'Content-Type': contentType, 'x-upsert': 'true', 'Cache-Control': 'no-store' }), body: buf });
-  if (!res.ok) throw new Error(`העלאה לענן נכשלה (${res.status}): ${(await res.text()).slice(0, 150)}`);
+  if (!res.ok) throw explain(res.status, (await res.text()).slice(0, 200), 'העלאה לענן');
 }
 // מחזיר Buffer, null אם הקובץ לא קיים, או זורק שגיאה
 async function get(key) {
   const res = await request('GET', objUrl(key), { headers: headers() });
   if (res.ok) return Buffer.from(await res.arrayBuffer());
   const text = (await res.text()).slice(0, 200);
-  if (res.status === 404 || res.status === 400 && /not.?found/i.test(text)) return null;
-  throw new Error(`קריאה מהענן נכשלה (${res.status}): ${text}`);
+  if (!/bucket/i.test(text) && (res.status === 404 || (res.status === 400 && /object.?not.?found|not_found/i.test(text)))) return null;
+  throw explain(res.status, text, 'קריאה מהענן');
 }
 async function del(keys) {
   if (!keys.length) return;
@@ -124,4 +141,4 @@ async function ensureLocal(key, localPath) {
 }
 function deleteFiles(keys) { if (enabled && !state.blocked) del(keys).catch(e => console.error('[cloud]', e.message)); }
 
-module.exports = { enabled, state, restoreDb, attach, schedule, syncNow, flush, putFile, ensureLocal, deleteFiles };
+module.exports = { normalizeUrl, enabled, state, restoreDb, attach, schedule, syncNow, flush, putFile, ensureLocal, deleteFiles };

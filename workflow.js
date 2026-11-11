@@ -22,7 +22,7 @@ const TRACKS = { regular: 'מסלול רגיל', fast: 'מסלול מזורז' }
 const TRACK_STATUS = { none: '—', pending: 'ממתין לאישור מסלול', approved: 'מסלול אושר', rejected: 'מסלול נדחה' };
 
 // מעבר -> ההרשאה הנדרשת. 'applicant' = המגיש בעצמו. 'sysadmin' = מנהל המערכת בלבד (תפקיד המערכת).
-// כשכל גורמי התשתית מאשרים, הבקשה עוברת אוטומטית ל"ממתינה לאישור מנהל המערכת". רק מנהל המערכת מאשר וסוגר.
+// כשכל גורמי התשתית מאשרים (כולל "בתנאים"), הבקשה עוברת אוטומטית ל"ממתינה לאישור מנהל המערכת". אישורו מסיים את הבקשה.
 const TRANSITIONS = {
   draft: { submitted: 'applicant' },
   submitted: { review: 'requests.change_status', returned: 'requests.change_status', rejected: 'requests.change_status' },
@@ -30,8 +30,8 @@ const TRANSITIONS = {
   coordination: { review: 'requests.change_status', pending_admin: 'requests.change_status', returned: 'requests.change_status', rejected: 'requests.change_status' },
   pending_admin: { approved: 'sysadmin', returned: 'sysadmin', rejected: 'sysadmin', coordination: 'sysadmin' },
   returned: { submitted: 'applicant' },
-  approved: { closed: 'sysadmin' },
-  rejected: { closed: 'sysadmin' },
+  approved: {}, // אישור מנהל המערכת מסיים את הבקשה – אין שלב סגירה נוסף
+  rejected: {},
   closed: {},
 };
 const OPEN_STATUSES = ['submitted', 'review', 'coordination', 'pending_admin', 'returned'];

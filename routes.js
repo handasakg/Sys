@@ -12,6 +12,24 @@ const up = require('./uploads');
 const backup = require('./backup');
 const mailer = require('./mailer');
 const cloud = require('./cloudsync');
+const docsPdf = require('./documents');
+
+// שמות משתמש: עברית, אנגלית, ספרות, נקודה, מקף, קו תחתון ורווח בודד (לא בהתחלה/בסוף)
+const USERNAME_RE = /^(?=.{3,60}$)[A-Za-z0-9\u05D0-\u05EA](?:[A-Za-z0-9\u05D0-\u05EA._-]| (?! ))*[A-Za-z0-9\u05D0-\u05EA]$/;
+const normUser = (s) => String(s ?? '').normalize('NFC').trim().replace(/\s+/g, ' ');
+// סוגי בקשות מהמסד
+const typesAll = () => db.prepare('SELECT * FROM request_types ORDER BY sort, id').all();
+const typesMap = () => Object.fromEntries(typesAll().map(t => [t.key, t.name]));
+// דוא"ל (אם הוגדר SMTP). לא חוסם את התשובה; כשל נרשם ביומן
+function mailUsers(users, subject, text, attachments) {
+  if (!mailer.isConfigured()) return;
+  for (const u of users) if (u && u.email) mailer.send({ to: u.email, subject, text, attachments }).catch(e => audit(null, 'mail_failed', { to: u.id, subject, error: e.message }, 'error'));
+}
+const sysTitle = () => getSetting('org.system_title') || 'מערכת תיאום הנדסי';
+const linkTo = (id) => `${config.publicUrl}/#/requests/${id}`;
+function mappingUsers() {
+  return db.prepare('SELECT u.*, r.system AS sys FROM users u JOIN roles r ON r.id = u.role_id WHERE u.active = 1').all().filter(u => u.sys || auth.effectivePerms(u).has('requests.mapping'));
+}
 
 // ---------------- נתב ----------------
 const table = [];
@@ -62,7 +80,7 @@ route('GET', '/api/health', () => ({ ok: true }));
 
 route('POST', '/api/auth/login', async (req, res) => {
   const ip = sec.clientIp(req);
-  const username = v.str(req.body.username, { max: 60, required: true, name: 'שם משתמש' });
+  const username = normUser(v.str(req.body.username, { max: 60, required: true, name: 'שם משתמש' }));
   const password = typeof req.body.password === 'string' ? req.body.password.slice(0, 256) : '';
   const rlIp = sec.rateLimit('login-ip:' + ip, 20, 15 * 60000, { persist: true });
   const rlUser = sec.rateLimit('login-user:' + username.toLowerCase(), 10, 15 * 60000, { persist: true });
@@ -108,9 +126,9 @@ route('GET', '/api/auth/me', (req) => {
   const unread = db.prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read = 0').get(u.id).c;
   const roleName = db.prepare('SELECT name FROM roles WHERE id = ?').get(u.role_id)?.name || '';
   const infraName = u.infra_body_id ? db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(u.infra_body_id)?.name || null : null;
-  return { user: { ...publicUser(u), role_name: roleName, infra_name: infraName }, perms: permsList(req), csrf: req.session.csrf, prefs: JSON.parse(u.prefs || '{}'),
+  return { user: { ...publicUser(u), role_name: roleName, infra_name: infraName, is_sysadmin: isSysAdmin(req) }, perms: permsList(req), csrf: req.session.csrf, prefs: JSON.parse(u.prefs || '{}'),
     title: getSetting('org.system_title'), org: getSetting('org.name'), logo: getSetting('org.logo') || null, unread,
-    meta: { types: W.TYPES, statuses: W.STATUSES, tracks: W.TRACKS, trackStatus: W.TRACK_STATUS,
+    meta: { types: typesMap(), typesActive: typesAll().filter(t => t.active).map(t => t.key), statuses: W.STATUSES, tracks: W.TRACKS, trackStatus: W.TRACK_STATUS,
       files: { allowed: up.allowedExt(), maxMb: Math.round(up.maxBytes() / 1048576) } } };
 });
 
@@ -208,7 +226,7 @@ function allowed(req, r, need) {
 }
 function canViewRequest(req, r) {
   const u = req.user;
-  if (u.perms.has('requests.view_all') || isSysAdmin(req)) return true;
+  if (u.perms.has('requests.view_all') || u.perms.has('requests.mapping') || isSysAdmin(req)) return true;
   if (!u.perms.has('requests.view_own') && !u.perms.has('approvals.decide')) return false;
   if (r.applicant_id === u.id || r.assignee_id === u.id) return true;
   if (db.prepare('SELECT 1 FROM user_requests WHERE user_id = ? AND request_id = ?').get(u.id, r.id)) return true;
@@ -224,7 +242,7 @@ function canEditRequest(req, r) {
 }
 function requestFields(b) {
   return {
-    type: v.oneOf(b.type, Object.keys(W.TYPES), { required: true, name: 'סוג בקשה' }),
+    type: v.oneOf(b.type, typesAll().filter(t => t.active || t.key === b.__currentType).map(t => t.key), { required: true, name: 'סוג בקשה' }),
     title: v.str(b.title, { max: 200, required: true, name: 'נושא' }),
     description: v.str(b.description, { max: 5000, name: 'תיאור' }),
     address: v.str(b.address, { max: 300, name: 'כתובת' }),
@@ -259,7 +277,7 @@ function decorate(r) {
   const overdue = r.due_at && W.OPEN_STATUSES.includes(r.status) && r.due_at < nowIso();
   return { ...r, overdue: !!overdue };
 }
-const REQ_SELECT = `SELECT r.*, a.full_name AS applicant_name, s.full_name AS assignee_name, p.name AS project_name,
+const REQ_SELECT = `SELECT r.*, a.full_name AS applicant_name, s.full_name AS assignee_name, COALESCE(p.name, r.project_name) AS project_name,
   (SELECT COUNT(*) FROM request_approvals x WHERE x.request_id = r.id) AS approvals_total,
   (SELECT COUNT(*) FROM request_approvals x WHERE x.request_id = r.id AND x.decision = 'approved') AS approvals_done
   FROM requests r JOIN users a ON a.id = r.applicant_id LEFT JOIN users s ON s.id = r.assignee_id LEFT JOIN projects p ON p.id = r.project_id`;
@@ -279,7 +297,7 @@ route('GET', '/api/requests', (req) => {
     params.push(u.id, u.id, u.infra_body_id || -1, u.id);
   }
   if (q.status && W.STATUSES[q.status]) { where.push('r.status = ?'); params.push(q.status); }
-  if (q.type && W.TYPES[q.type]) { where.push('r.type = ?'); params.push(q.type); }
+  if (q.type && typesMap()[q.type]) { where.push('r.type = ?'); params.push(q.type); }
   if (q.track && W.TRACKS[q.track]) { where.push('r.track = ?'); params.push(q.track); }
   if (q.project_id) { where.push('r.project_id = ?'); params.push(v.id(q.project_id)); }
   if (q.q) {
@@ -322,23 +340,29 @@ route('GET', '/api/requests/:id', (req) => {
   if (!r) throw new HttpError(404, 'הבקשה לא נמצאה');
   assertView(req, r);
   const approvals = db.prepare(`SELECT ra.*, b.name AS body_name, u.full_name AS decided_by_name FROM request_approvals ra
-    JOIN infra_bodies b ON b.id = ra.infra_body_id LEFT JOIN users u ON u.id = ra.decided_by WHERE ra.request_id = ? ORDER BY b.name`).all(r.id);
+    JOIN infra_bodies b ON b.id = ra.infra_body_id LEFT JOIN users u ON u.id = ra.decided_by WHERE ra.request_id = ? ORDER BY ra.seq, ra.id`).all(r.id);
+  const turn = currentTurn(r.id);
   const hist = db.prepare(`SELECT h.*, u.full_name AS user_name FROM request_history h LEFT JOIN users u ON u.id = h.user_id WHERE h.request_id = ? ORDER BY h.id DESC`).all(r.id);
-  const docs = db.prepare(`SELECT d.id, d.original_name, d.size, d.mime, d.category, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name
+  const docs = db.prepare(`SELECT d.id, d.request_id, d.original_name, d.size, d.mime, d.category, d.visibility, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name
     FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.request_id = ? ORDER BY d.id DESC`).all(r.id).filter(d => canSeeDoc(req, d));
+  const approvalDoc = docs.find(d => d.category === 'אישור לביצוע עבודה') || null;
   const members = db.prepare('SELECT u.id, u.full_name FROM user_requests ur JOIN users u ON u.id = ur.user_id WHERE ur.request_id = ? ORDER BY u.full_name').all(r.id);
   const tasks = db.prepare(`SELECT t.*, u.full_name AS assignee_name FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.request_id = ? ORDER BY t.id DESC`).all(r.id);
   const transitions = Object.entries(W.TRANSITIONS[r.status] || {}).filter(([, need]) => allowed(req, r, need)).map(([to]) => to);
-  return { request: decorate(r), approvals, history: hist, documents: docs, tasks, transitions, members, docsOwnOnly: docsOwnOnly() && !isSysAdmin(req),
+  const ap = db.prepare('SELECT email, phone, address FROM users WHERE id = ?').get(r.applicant_id) || {};
+  const applicant = { email: ap.email || null, phone: ap.phone || null, address: ap.address || null, kind: r.applicant_kind || null };
+  return { request: { ...decorate(r), type_name: typesMap()[r.type] || r.type }, applicant, approvals, turn_id: turn ? turn.id : null, approvalDoc, history: hist, documents: docs, tasks, transitions, members,
+    docsOwnOnly: docsOwnOnly() && !isSysAdmin(req) && !can(req, 'requests.mapping'),
     can: { edit: canEditRequest(req, r), delete: can(req, 'requests.delete'), assign: can(req, 'requests.assign'),
-      approveTrack: can(req, 'requests.approve_track'), upload: can(req, 'files.upload'), decide: can(req, 'approvals.decide'), sysadmin: isSysAdmin(req) } };
+      approveTrack: can(req, 'requests.approve_track'), upload: can(req, 'files.upload'), decide: can(req, 'approvals.decide'), sysadmin: isSysAdmin(req),
+      mapInfra: can(req, 'requests.assign') || can(req, 'requests.mapping') } };
 });
 
 route('PUT', '/api/requests/:id', (req) => {
   requireAuth(req);
   const r = loadRequest(req.params.id); assertView(req, r);
   if (!canEditRequest(req, r)) throw new HttpError(403, 'אין הרשאה לערוך בקשה זו');
-  const f = requestFields({ ...r, ...req.body });
+  const f = requestFields({ ...r, ...req.body, __currentType: r.type });
   if (f.project_id && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(f.project_id)) throw new sec.ValidationError('פרויקט לא קיים');
   db.prepare(`UPDATE requests SET type=?, title=?, description=?, address=?, gush=?, helka=?, project_id=?, planned_start=?, planned_end=?, updated_at=? WHERE id=?`)
     .run(f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_id, f.planned_start, f.planned_end, nowIso(), r.id);
@@ -369,7 +393,54 @@ route('POST', '/api/requests/:id/number', (req) => {
   return { ok: true };
 });
 
-route('POST', '/api/requests/:id/status', (req) => {
+// ---------- סדר טיפול של גורמי התשתית ----------
+// "אושר" ו"אושר בתנאים" מסיימים את תור הגורם; "נדחה" / "ממתין" – התור נשאר אצלו
+const DONE = "('approved','conditions')";
+function currentTurn(requestId) {
+  return db.prepare(`SELECT ra.*, b.name AS body_name FROM request_approvals ra JOIN infra_bodies b ON b.id = ra.infra_body_id
+    WHERE ra.request_id = ? AND ra.decision NOT IN ${DONE} ORDER BY ra.seq, ra.id LIMIT 1`).get(requestId);
+}
+// מודיע (התראה + דוא"ל) לגורם שהגיע תורו – פעם אחת לכל גורם
+function notifyTurn(requestId, prevBody) {
+  const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+  if (!r || !['review', 'coordination'].includes(r.status)) return;
+  const a = currentTurn(r.id); if (!a || a.notified_at) return;
+  db.prepare('UPDATE request_approvals SET notified_at = ? WHERE id = ?').run(nowIso(), a.id);
+  const users = db.prepare('SELECT id, full_name, email FROM users WHERE infra_body_id = ? AND active = 1').all(a.infra_body_id);
+  const text = prevBody ? `${prevBody} סיים את הטיפול בבקשה ${r.number}. עכשיו תורכם (${a.body_name}) לתת חוות דעת.` : `בקשה ${r.number} ממתינה לחוות דעת ${a.body_name}.`;
+  for (const u of users) notify(u.id, text, `#/requests/${r.id}`);
+  mailUsers(users, `בקשה ${r.number} ממתינה לחוות דעתכם – ${sysTitle()}`, `שלום,\n\n${text}\nנושא: ${r.title}\n\nלצפייה ולמתן חוות דעת: ${linkTo(r.id)}\n\n${sysTitle()}`);
+  history(r.id, null, `התור עבר ל${a.body_name}`, null);
+}
+
+// ---------- אישור סופי: הפקת מסמך האישור, צירוף לבקשה ושליחה למגיש ----------
+function logoBuffer() {
+  const name = getSetting('org.logo'); const path_ = require('node:path');
+  if (name && /^logo-\d+\.(png|jpg)$/.test(name)) { const f = path_.join(config.dataDir, name); if (fs.existsSync(f)) return fs.readFileSync(f); }
+  try { return fs.readFileSync(path_.join(__dirname, 'logo.png')); } catch { return null; }
+}
+function policeData(requestId) { const p = db.prepare('SELECT data FROM request_police WHERE request_id = ?').get(requestId); return p ? JSON.parse(p.data) : null; }
+async function issueApproval(req, requestId, adminComment) {
+  const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+  const applicant = db.prepare('SELECT * FROM users WHERE id = ?').get(r.applicant_id);
+  const approvals = db.prepare(`SELECT ra.*, b.name AS body_name, u.full_name AS decided_by_name FROM request_approvals ra JOIN infra_bodies b ON b.id = ra.infra_body_id
+    LEFT JOIN users u ON u.id = ra.decided_by WHERE ra.request_id = ? ORDER BY ra.seq, ra.id`).all(r.id);
+  const { buffer, code } = docsPdf.approvalPdf({ org: getSetting('org.name'), systemTitle: sysTitle(), logo: logoBuffer(), typeName: typesMap()[r.type] || r.type,
+    request: r, police: policeData(r.id), applicant, approvals, admin: { name: req.user.full_name, comment: adminComment }, guidelines: getSetting('approval.guidelines'), secret: r.number });
+  const st = up.storeBuffer(buffer);
+  const fname = `אישור לביצוע עבודה – ${r.number}.pdf`;
+  try { await cloud.putFile('uploads/' + st.stored, buffer, 'application/pdf'); } catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); }
+  const info = db.prepare(`INSERT INTO documents (request_id, category, original_name, stored_name, mime, size, sha256, uploaded_by, visibility) VALUES (?, 'אישור לביצוע עבודה', ?, ?, 'application/pdf', ?, ?, ?, 'shared')`)
+    .run(r.id, fname, st.stored, st.size, st.sha256, req.user.id);
+  history(r.id, req.user.id, 'הופק מסמך אישור לביצוע עבודה', `קוד מסמך ${code}`);
+  notify(r.applicant_id, `בקשה ${r.number} אושרה. מסמך האישור לביצוע עבודה מחכה לך בבקשה.`, `#/requests/${r.id}`);
+  mailUsers([applicant], `בקשה ${r.number} אושרה – אישור לביצוע עבודה`, `שלום ${applicant.full_name},\n\nבקשה ${r.number} אושרה.\nמצורף מסמך האישור לביצוע עבודה. המסמך זמין גם בבקשה במערכת: ${linkTo(r.id)}\n\nיש לפעול לפי התנאים וההנחיות שבמסמך.\n\n${getSetting('org.name')}`,
+    [{ filename: fname, content: buffer, contentType: 'application/pdf' }]);
+  audit(req, 'approval_issued', { id: r.id, doc: Number(info.lastInsertRowid), code }, 'notice');
+  return Number(info.lastInsertRowid);
+}
+
+route('POST', '/api/requests/:id/status', async (req) => {
   requireAuth(req);
   const r = loadRequest(req.params.id); assertView(req, r);
   const to = v.oneOf(req.body.status, Object.keys(W.STATUSES), { required: true, name: 'סטטוס' });
@@ -380,7 +451,7 @@ route('POST', '/api/requests/:id/status', (req) => {
     const e = new HttpError(403, need === 'sysadmin' ? 'רק מנהל המערכת מאשר וסוגר בקשות' : 'אין הרשאה לפעולה זו'); e.permDenied = need; throw e;
   }
   if (to === 'approved' || to === 'pending_admin') {
-    const pending = db.prepare("SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision != 'approved'").get(r.id).c;
+    const pending = db.prepare(`SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision NOT IN ${DONE}`).get(r.id).c;
     if (pending) throw new HttpError(400, 'לא ניתן לאשר: יש גורמי תשתית שטרם אישרו');
   }
   const sets = { status: to, updated_at: nowIso() };
@@ -394,6 +465,9 @@ route('POST', '/api/requests/:id/status', (req) => {
   if (to === 'submitted' && !r.assignee_id) notifyPerm('requests.assign', `בקשה הוגשה: ${r.number}`, `#/requests/${r.id}`, req.user.id);
   if (to === 'pending_admin') notifySysAdmins(`בקשה ${r.number} ממתינה לאישורך הסופי`, `#/requests/${r.id}`, req.user.id);
   audit(req, 'request_status', { id: r.id, from: r.status, to });
+  if (to === 'review' || to === 'coordination') notifyTurn(r.id);
+  // אישור מנהל המערכת מסיים את הבקשה: מסמך אישור, צירוף לבקשה ושליחה למגיש
+  if (to === 'approved') { const docId = await issueApproval(req, r.id, comment); return { ok: true, approval_doc: docId }; }
   return { ok: true };
 });
 
@@ -425,23 +499,23 @@ route('POST', '/api/requests/:id/track', (req) => {
 });
 
 route('POST', '/api/requests/:id/approvals', (req) => {
-  requirePerm(req, 'requests.assign');
+  requirePerm(req, 'requests.assign', 'requests.mapping');
   const r = loadRequest(req.params.id);
-  const ids = Array.isArray(req.body.infra_body_ids) ? req.body.infra_body_ids.slice(0, 50).map(x => v.id(x, { required: true })) : [];
+  // הסדר ברשימה = סדר הטיפול. כל גורם מקבל הודעה כשהגורם שלפניו סיים
+  const ids = Array.isArray(req.body.infra_body_ids) ? [...new Set(req.body.infra_body_ids.slice(0, 50).map(x => v.id(x, { required: true })))] : [];
   tx(() => {
     const existing = db.prepare('SELECT infra_body_id, decision FROM request_approvals WHERE request_id = ?').all(r.id);
     for (const e of existing) if (!ids.includes(e.infra_body_id) && e.decision === 'pending') db.prepare('DELETE FROM request_approvals WHERE request_id = ? AND infra_body_id = ?').run(r.id, e.infra_body_id);
-    for (const bid of ids) {
+    ids.forEach((bid, i) => {
       const b = db.prepare('SELECT id, name FROM infra_bodies WHERE id = ? AND active = 1').get(bid);
-      if (!b) throw new sec.ValidationError('גורם תשתית לא קיים');
-      const ins = db.prepare('INSERT OR IGNORE INTO request_approvals (request_id, infra_body_id) VALUES (?, ?)').run(r.id, bid);
-      if (ins.changes) {
-        for (const u of db.prepare('SELECT id FROM users WHERE infra_body_id = ? AND active = 1').all(bid)) notify(u.id, `נדרשת חוות דעתך לבקשה ${r.number}`, `#/requests/${r.id}`);
-      }
-    }
+      if (!b && !existing.some(e => e.infra_body_id === bid)) throw new sec.ValidationError('גורם תשתית לא קיים');
+      db.prepare('INSERT OR IGNORE INTO request_approvals (request_id, infra_body_id) VALUES (?, ?)').run(r.id, bid);
+      db.prepare('UPDATE request_approvals SET seq = ? WHERE request_id = ? AND infra_body_id = ?').run(i + 1, r.id, bid);
+    });
   });
-  history(r.id, req.user.id, 'עודכנו גורמי תשתית נדרשים', null);
+  history(r.id, req.user.id, 'נקבעו גורמי התשתית וסדר הטיפול', ids.map(id => db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(id)?.name).filter(Boolean).join(' ← '));
   audit(req, 'request_infra_set', { id: r.id, ids });
+  notifyTurn(r.id);
   return { ok: true };
 });
 
@@ -454,6 +528,9 @@ route('POST', '/api/approvals/:id/decide', (req) => {
   const decision = v.oneOf(req.body.decision, ['approved', 'rejected', 'conditions'], { required: true, name: 'החלטה' });
   const comment = v.str(req.body.comment, { max: 2000, name: 'הערה', required: decision !== 'approved' });
   const r = loadRequest(a.request_id);
+  if (!['review', 'coordination'].includes(r.status)) throw new HttpError(400, 'אפשר לתת חוות דעת רק כשהבקשה בבדיקה או בתיאום גורמים');
+  const turn = currentTurn(r.id);
+  if (!turn || turn.id !== a.id) throw new HttpError(409, turn ? `עדיין לא הגיע תורכם. כרגע ממתינים ל${turn.body_name}.` : 'כל הגורמים כבר אישרו');
   db.prepare('UPDATE request_approvals SET decision = ?, comment = ?, decided_by = ?, decided_at = ? WHERE id = ?').run(decision, comment, req.user.id, nowIso(), a.id);
   db.prepare('UPDATE requests SET updated_at = ? WHERE id = ?').run(nowIso(), r.id);
   const body = db.prepare('SELECT name FROM infra_bodies WHERE id = ?').get(a.infra_body_id);
@@ -465,7 +542,7 @@ route('POST', '/api/approvals/:id/decide', (req) => {
   // כל גורמי התשתית אישרו → הבקשה עוברת אוטומטית לאישור מנהל המערכת
   let advanced = false;
   if (['review', 'coordination'].includes(r.status)) {
-    const left = db.prepare("SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision != 'approved'").get(r.id).c;
+    const left = db.prepare(`SELECT COUNT(*) AS c FROM request_approvals WHERE request_id = ? AND decision NOT IN ${DONE}`).get(r.id).c;
     if (!left) {
       db.prepare("UPDATE requests SET status = 'pending_admin', updated_at = ? WHERE id = ?").run(nowIso(), r.id);
       history(r.id, null, 'כל גורמי התשתית אישרו – הבקשה הועברה אוטומטית לאישור מנהל המערכת', null);
@@ -473,7 +550,12 @@ route('POST', '/api/approvals/:id/decide', (req) => {
       notify(r.applicant_id, `בקשה ${r.number}: כל גורמי התשתית אישרו – ממתינה לאישור מנהל המערכת`, `#/requests/${r.id}`);
       audit(req, 'request_auto_pending_admin', { id: r.id });
       advanced = true;
-    }
+    } else if (decision !== 'rejected') notifyTurn(r.id, body.name);
+  }
+  if (decision === 'rejected') {
+    const who = [...new Map([...mappingUsers(), ...(r.assignee_id ? [db.prepare('SELECT * FROM users WHERE id = ?').get(r.assignee_id)] : [])].map(u => [u.id, u])).values()];
+    for (const u of who) notify(u.id, `${body.name} דחה את בקשה ${r.number}: ${comment}`, `#/requests/${r.id}`);
+    mailUsers(who, `בקשה ${r.number}: ${body.name} דחה את הבקשה`, `${body.name} דחה את בקשה ${r.number}.\nנימוק: ${comment}\n\n${linkTo(r.id)}`);
   }
   return { ok: true, advanced };
 });
@@ -517,7 +599,9 @@ route('POST', '/api/documents', async (req) => {
 // 'request' = כל מי שרשאי לראות את הבקשה / הפרויקט רואה את המסמכים שלו.
 const docsOwnOnly = () => getSetting('docs.visibility') !== 'request';
 function canSeeDoc(req, d) {
-  if (isSysAdmin(req)) return true;
+  if (isSysAdmin(req) || can(req, 'requests.mapping')) return true; // מנהל המערכת ואחראי מיפוי רואים הכל
+  if (d.visibility === 'restricted') return false;                  // טופס משטרה – רק הם
+  if (d.visibility === 'shared' && d.request_id) { const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(d.request_id); return !!r && canViewRequest(req, r); } // מסמך האישור
   if (docsOwnOnly()) return d.uploaded_by === req.user.id;
   if (d.request_id) { const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(d.request_id); return !!r && canViewRequest(req, r); }
   return can(req, 'projects.view');
@@ -529,10 +613,10 @@ function loadDoc(req) {
 }
 route('GET', '/api/documents', (req) => {
   requireAuth(req);
-  const rows = db.prepare(`SELECT d.id, d.request_id, d.project_id, d.category, d.original_name, d.size, d.mime, d.created_at, d.uploaded_by,
+  const rows = db.prepare(`SELECT d.id, d.request_id, d.project_id, d.category, d.visibility, d.original_name, d.size, d.mime, d.created_at, d.uploaded_by,
     u.full_name AS uploaded_by_name, r.number AS request_number, p.name AS project_name
     FROM documents d JOIN users u ON u.id = d.uploaded_by LEFT JOIN requests r ON r.id = d.request_id LEFT JOIN projects p ON p.id = d.project_id ORDER BY d.id DESC LIMIT 1000`).all();
-  return { items: rows.filter(d => canSeeDoc(req, d)), ownOnly: docsOwnOnly() && !isSysAdmin(req) };
+  return { items: rows.filter(d => canSeeDoc(req, d)), ownOnly: docsOwnOnly() && !isSysAdmin(req) && !can(req, 'requests.mapping') };
 });
 route('GET', '/api/documents/:id/download', async (req, res) => {
   requirePerm(req, 'files.download');
@@ -597,7 +681,7 @@ route('GET', '/api/projects/:id', (req) => {
   const tasks = can(req, 'tasks.view') ? db.prepare('SELECT t.*, u.full_name AS assignee_name FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id = ? ORDER BY t.due_date IS NULL, t.due_date').all(p.id) : [];
   const budget = can(req, 'budget.view') ? db.prepare('SELECT * FROM budget_entries WHERE project_id = ? ORDER BY entry_date DESC, id DESC').all(p.id) : null;
   const requests = db.prepare(`${REQ_SELECT} WHERE r.project_id = ? ORDER BY r.id DESC`).all(p.id).filter(r => canViewRequest(req, r)).map(decorate);
-  const docs = db.prepare('SELECT d.id, d.original_name, d.size, d.category, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.project_id = ? ORDER BY d.id DESC').all(p.id).filter(d => canSeeDoc(req, d));
+  const docs = db.prepare('SELECT d.id, d.request_id, d.project_id, d.visibility, d.original_name, d.size, d.category, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.project_id = ? ORDER BY d.id DESC').all(p.id).filter(d => canSeeDoc(req, d));
   return { project: p, tasks, budget, requests, documents: docs };
 });
 route('PUT', '/api/projects/:id', (req) => {
@@ -731,7 +815,7 @@ route('GET', '/api/dashboard', (req) => {
 route('GET', '/api/reports', (req) => {
   requireAuth(req);
   const months = [3, 6, 12, 24].includes(Number(req.query.months)) ? Number(req.query.months) : 12;
-  const type = W.TYPES[req.query.type] ? req.query.type : null;
+  const type = typesMap()[req.query.type] ? req.query.type : null;
   const now = new Date();
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months + 1, 1));
   const startIso = start.toISOString().slice(0, 19).replace('T', ' ');
@@ -833,7 +917,7 @@ function saveLinks(userId, ids) {
 route('POST', '/api/admin/users', async (req) => {
   requirePerm(req, 'admin.users');
   const b = req.body;
-  const username = v.str(b.username, { max: 60, required: true, name: 'שם משתמש', pattern: /^[a-zA-Z0-9._-]{3,60}$/ });
+  const username = v.str(normUser(b.username), { max: 60, required: true, name: 'שם משתמש', pattern: USERNAME_RE });
   const full_name = v.str(b.full_name, { max: 100, required: true, name: 'שם מלא' });
   const email = v.str(b.email, { max: 200, name: 'דוא"ל', pattern: v.EMAIL });
   const role_id = v.id(b.role_id, { required: true, name: 'תפקיד' });
@@ -857,7 +941,7 @@ route('PUT', '/api/admin/users/:id', (req) => {
   if (!u) throw new HttpError(404, 'משתמש לא נמצא');
   const b = req.body;
   const upd = {
-    username: v.str(b.username ?? u.username, { max: 60, required: true, name: 'שם משתמש', pattern: /^[a-zA-Z0-9._-]{3,60}$/ }),
+    username: v.str(normUser(b.username ?? u.username), { max: 60, required: true, name: 'שם משתמש', pattern: USERNAME_RE }),
     full_name: v.str(b.full_name ?? u.full_name, { max: 100, required: true, name: 'שם מלא' }),
     email: v.str(b.email ?? u.email, { max: 200, name: 'דוא"ל', pattern: v.EMAIL }),
     phone: v.str(b.phone ?? u.phone, { max: 30, name: 'טלפון', pattern: /^[\d+\-\s()]*$/ }),
@@ -967,6 +1051,7 @@ route('GET', '/api/admin/settings', (req) => {
     sla_regular_days: +getSetting('sla.regular_days'), sla_fast_days: +getSetting('sla.fast_days'),
     org_name: getSetting('org.name'), system_title: getSetting('org.system_title'),
     req_prefix: getSetting('requests.prefix'), req_with_year: getSetting('requests.with_year') === '1', req_pad: +getSetting('requests.pad'),
+    guidelines: getSetting('approval.guidelines') || '', public_apply: getSetting('public.apply') !== '0',
     req_next_preview: nextRequestNumber(), logo: !!getSetting('org.logo'), docs_visibility: docsOwnOnly() ? 'own' : 'request',
   };
 });
@@ -987,6 +1072,8 @@ route('PUT', '/api/admin/settings', (req) => {
   if (b.sla_fast_days !== undefined) setSetting('sla.fast_days', v.num(b.sla_fast_days, { min: 1, max: 60, name: 'ימי טיפול במסלול מזורז' }));
   if (b.org_name !== undefined) setSetting('org.name', v.str(b.org_name, { max: 100, required: true, name: 'שם הארגון' }));
   if (b.system_title !== undefined) setSetting('org.system_title', v.str(b.system_title, { max: 100, required: true, name: 'שם המערכת' }));
+  if (b.guidelines !== undefined) setSetting('approval.guidelines', v.str(b.guidelines, { max: 8000, name: 'הנחיות' }) || '');
+  if (b.public_apply !== undefined) setSetting('public.apply', b.public_apply ? '1' : '0');
   if (b.docs_visibility !== undefined) setSetting('docs.visibility', v.oneOf(b.docs_visibility, ['own', 'request'], { required: true, name: 'חשיפת מסמכים' }));
   if (b.req_prefix !== undefined) setSetting('requests.prefix', v.str(b.req_prefix, { max: 10, name: 'קידומת', pattern: /^[A-Za-z0-9\u0590-\u05FF]*$/ }) || '');
   if (b.req_with_year !== undefined) setSetting('requests.with_year', b.req_with_year ? '1' : '0');
@@ -1098,6 +1185,206 @@ route('GET', '/api/logo', async (req, res) => {
   res.writeHead(200, { 'Content-Type': LOGO_TYPES[name.split('.').pop()], 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=31536000, immutable',
     'Content-Security-Policy': "default-src 'none'; sandbox", 'Cross-Origin-Resource-Policy': 'same-origin' });
   res.end(buf);
+});
+
+// ---------------- הגשת בקשה מהציבור (תושב/ת או יזם) ----------------
+const KINDS = { resident: 'תושב/ת', entrepreneur: 'יזם' };
+const ROUTE_EXT = ['pdf', 'dwf'];
+const WORKREQ_EXT = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png'];
+function validIsraeliId(id) {
+  if (!/^\d{5,9}$/.test(id)) return false;
+  const s9 = id.padStart(9, '0'); let sum = 0;
+  for (let i = 0; i < 9; i++) { let n = +s9[i] * ((i % 2) + 1); if (n > 9) n -= 9; sum += n; }
+  return sum % 10 === 0;
+}
+const normPhone = (p) => String(p ?? '').replace(/[\s\-()]/g, '').replace(/^\+972/, '0');
+function phoneField(v0, name) {
+  const p = normPhone(v0);
+  if (!/^0\d{8,9}$/.test(p)) throw new sec.ValidationError(`${name}: מספר טלפון ישראלי לא תקין`);
+  return p;
+}
+function policeFields(raw) {
+  let p; try { p = JSON.parse(raw || ''); } catch { throw new sec.ValidationError('טופס משטרה: יש למלא את הטופס'); }
+  if (!p || typeof p !== 'object') throw new sec.ValidationError('טופס משטרה: יש למלא את הטופס');
+  const idKind = v.oneOf(p.id_kind, ['id', 'company'], { required: true, name: 'טופס משטרה – סוג מזהה' });
+  const idNum = v.str(String(p.id_number ?? '').replace(/\D/g, ''), { required: true, max: 9, name: idKind === 'id' ? 'טופס משטרה – תעודת זהות' : 'טופס משטרה – ח.פ' });
+  if (idKind === 'id' && !validIsraeliId(idNum)) throw new sec.ValidationError('טופס משטרה – תעודת זהות לא תקינה (ספרת ביקורת שגויה)');
+  if (idKind === 'company' && !/^\d{9}$/.test(idNum)) throw new sec.ValidationError('טופס משטרה – ח.פ חייב להיות 9 ספרות');
+  return {
+    applicant_name: v.str(p.applicant_name, { required: true, max: 100, name: 'טופס משטרה – שם מבקש/ת' }),
+    project: v.str(p.project, { required: true, max: 200, name: 'טופס משטרה – פרויקט' }),
+    id_kind: idKind, id_number: idNum.padStart(idKind === 'id' ? 9 : 9, '0'),
+    phone: phoneField(p.phone, 'טופס משטרה – פלאפון'),
+    description: v.str(p.description, { required: true, max: 2000, name: 'טופס משטרה – תיאור' }),
+    work_time: v.str(p.work_time, { required: true, max: 200, name: 'טופס משטרה – זמן עבודה' }),
+    work_hours: v.str(p.work_hours, { required: true, max: 100, name: 'טופס משטרה – שעות עבודה' }),
+    contact: v.str(p.contact, { required: true, max: 200, name: 'טופס משטרה – איש קשר' }),
+    notes: v.str(p.notes, { max: 2000, name: 'טופס משטרה – הערות' }),
+    date: v.date(p.date, { required: true, name: 'טופס משטרה – תאריך' }),
+  };
+}
+// תפקיד למשתמש שנרשם: לפי סוג הבקשה וסוג המגיש, או תפקיד ברירת המחדל "תושב/ת" / "יזם"
+function publicRole(type, kind) {
+  const id = kind === 'entrepreneur' ? type.role_entrepreneur : type.role_resident;
+  const row = id ? db.prepare('SELECT * FROM roles WHERE id = ?').get(id) : db.prepare('SELECT * FROM roles WHERE name = ?').get(KINDS[kind]);
+  if (!row || !safePublicRole(row)) throw new HttpError(500, 'לא הוגדר תפקיד לנרשמים מהציבור');
+  return row.id;
+}
+// תפקיד שמותר לתת לנרשם מהציבור: לא תפקיד מערכת ובלי שום הרשאת ניהול / מיפוי / צפייה בכל הבקשות
+const PUBLIC_FORBIDDEN = ['admin.', 'requests.view_all', 'requests.edit_all', 'requests.delete', 'requests.mapping', 'requests.final_approve', 'requests.assign', 'files.delete_all', 'budget.manage'];
+function safePublicRole(role) { return !role.system && !JSON.parse(role.perms).some(p => PUBLIC_FORBIDDEN.some(f => p === f || (f.endsWith('.') && p.startsWith(f)))); }
+
+route('GET', '/api/public/apply-meta', () => {
+  const on = getSetting('public.apply') !== '0';
+  return { enabled: on, types: on ? typesAll().filter(t => t.active && t.public).map(t => ({ key: t.key, name: t.name, description: t.description || '' })) : [],
+    maxMb: Math.round(up.maxBytes() / 1048576), routeExt: ROUTE_EXT, workExt: WORKREQ_EXT };
+});
+
+route('POST', '/api/public/apply', async (req, res) => {
+  if (getSetting('public.apply') === '0') return status(403, { error: 'הגשת בקשות מהאתר סגורה כרגע' });
+  if (req.user) return status(400, { error: 'כבר מחוברים למערכת. להגשת בקשה נוספת השתמשו ב"בקשה חדשה".' });
+  const ip = sec.clientIp(req);
+  const rl = sec.rateLimit('apply:' + ip, 5, 60 * 60000, { persist: true });
+  if (!rl.ok) { audit(req, 'apply_rate_limited', {}, 'warning'); res.setHeader('Retry-After', rl.retryAfter); return status(429, { error: 'הוגשו יותר מדי בקשות מהמחשב הזה. נסו שוב בעוד שעה.' }); }
+  const { fields: f, files } = await up.parseMultipart(req, up.maxBytes() * 2 + 256 * 1024, { multi: true });
+  if (f.website) { audit(req, 'apply_honeypot', {}, 'warning'); return status(400, { error: 'הבקשה לא תקינה' }); } // שדה מלכודת לבוטים
+  // ---- אימות שדות (בשרת – מחייב) ----
+  const kind = v.oneOf(f.kind, Object.keys(KINDS), { required: true, name: 'סוג מגיש' });
+  const username = v.str(normUser(f.username), { required: true, max: 60, name: 'שם משתמש', pattern: USERNAME_RE });
+  const probs = sec.passwordProblems(f.password, username);
+  if (probs.length) throw new sec.ValidationError('סיסמה חלשה: ' + probs.join(', '));
+  const type = typesAll().find(t => t.key === f.type && t.active && t.public);
+  if (!type) throw new sec.ValidationError('סוג בקשה: יש לבחור מהרשימה');
+  const email = v.str(f.email, { required: true, max: 200, name: 'אימייל', pattern: v.EMAIL });
+  const address = v.str(f.address, { required: true, max: 300, name: 'כתובת מגורים' });
+  const phone = phoneField(f.phone, 'פלאפון');
+  const project = v.str(f.project, { required: true, max: 200, name: 'פרויקט' });
+  const police = policeFields(f.police);
+  const routeFile = files.find(x => x.name === 'route_plan'); const workFile = files.find(x => x.name === 'work_request');
+  if (!routeFile) throw new sec.ValidationError('תוכנית תוואי: יש לצרף קובץ PDF או DWF');
+  if (!workFile) throw new sec.ValidationError('בקשת עבודה: יש לצרף קובץ');
+  let routeChk, workChk;
+  try { routeChk = up.checkFile(routeFile.filename, routeFile.data, ROUTE_EXT, 'תוכנית תוואי'); workChk = up.checkFile(workFile.filename, workFile.data, WORKREQ_EXT, 'בקשת עבודה'); }
+  catch (e) { audit(req, 'upload_rejected', { reason: e.message }, 'warning'); throw e; }
+  if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new sec.ValidationError('שם המשתמש תפוס. בחרו שם אחר, או היכנסו עם המשתמש הקיים.');
+  const roleId = publicRole(type, kind);
+  const hash = await sec.hashPassword(f.password);
+  // ---- קבצים לדיסק ----
+  const stored = [];
+  const keep = (buf) => { const st = up.storeBuffer(buf); stored.push(st.stored); return st; };
+  let created;
+  try {
+    const stRoute = keep(routeFile.data); const stWork = keep(workFile.data);
+    const handlers = JSON.parse(type.handler_ids || '[]').filter(id => db.prepare('SELECT 1 FROM users WHERE id = ? AND active = 1').get(id));
+    const chain = JSON.parse(type.infra_chain || '[]').filter(id => db.prepare('SELECT 1 FROM infra_bodies WHERE id = ? AND active = 1').get(id));
+    created = tx(() => {
+      const u = db.prepare(`INSERT INTO users (username, full_name, email, phone, address, password_hash, role_id, applicant_kind, must_change_pw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+        .run(username, police.applicant_name, email, phone, address, hash, roleId, kind);
+      const userId = Number(u.lastInsertRowid);
+      const number = nextRequestNumber();
+      const title = `${type.name} – ${project}`.slice(0, 200);
+      const rq = db.prepare(`INSERT INTO requests (number, type, title, description, project_name, applicant_id, assignee_id, status, track, track_status, applicant_kind, planned_start, submitted_at, due_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', 'regular', 'none', ?, ?, ?, ?)`)
+        .run(number, type.key, title, police.description, project, userId, handlers[0] || null, kind, police.date, nowIso(), addDays(slaDays('regular', 'none')));
+      const requestId = Number(rq.lastInsertRowid);
+      for (const h of handlers) db.prepare('INSERT OR IGNORE INTO user_requests (user_id, request_id) VALUES (?, ?)').run(h, requestId);
+      chain.forEach((bid, i) => db.prepare('INSERT OR IGNORE INTO request_approvals (request_id, infra_body_id, seq) VALUES (?, ?, ?)').run(requestId, bid, i + 1));
+      db.prepare('INSERT INTO request_police (request_id, data) VALUES (?, ?)').run(requestId, JSON.stringify(police));
+      const doc = db.prepare('INSERT INTO documents (request_id, category, original_name, stored_name, mime, size, sha256, uploaded_by, visibility) VALUES (?,?,?,?,?,?,?,?,?)');
+      doc.run(requestId, 'תוכנית תוואי', routeChk.original, stRoute.stored, routeChk.mime, stRoute.size, stRoute.sha256, userId, 'default');
+      doc.run(requestId, 'בקשת עבודה', workChk.original, stWork.stored, workChk.mime, stWork.size, stWork.sha256, userId, 'default');
+      // טופס משטרה → PDF מוגבל (מנהל המערכת ואחראי מיפוי בלבד)
+      const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+      const pdf = docsPdf.policePdf({ org: getSetting('org.name'), systemTitle: sysTitle(), logo: logoBuffer(), request: r, police }).buffer;
+      const stPol = keep(pdf);
+      doc.run(requestId, 'טופס משטרה', `טופס משטרה – ${number}.pdf`, stPol.stored, 'application/pdf', stPol.size, stPol.sha256, userId, 'restricted');
+      history(requestId, userId, 'הבקשה הוגשה מהאתר', `${KINDS[kind]} · ${type.name}`);
+      return { userId, requestId, number, handlers, pdf, stPol: stPol.stored, stRoute: stRoute.stored, stWork: stWork.stored };
+    });
+  } catch (e) { for (const n of stored) fs.rm(up.storedPath(n), { force: true }, () => {}); throw e; }
+  // ענן (אם הוגדר)
+  for (const [n, buf, t] of [[created.stRoute, routeFile.data, routeChk.mime], [created.stWork, workFile.data, workChk.mime], [created.stPol, created.pdf, 'application/pdf']]) {
+    try { await cloud.putFile('uploads/' + n, buf, t); } catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); }
+  }
+  // התראה + דוא"ל לאחראי מיפוי ולמנהלי המערכת, ולמטפלים שהוגדרו לסוג הבקשה
+  const link = `#/requests/${created.requestId}`;
+  const mappers = mappingUsers();
+  const handlerUsers = created.handlers.map(id => db.prepare('SELECT * FROM users WHERE id = ?').get(id)).filter(Boolean);
+  const all = [...new Map([...mappers, ...handlerUsers].map(u => [u.id, u])).values()];
+  const text = `בקשה חדשה ${created.number} הוגשה מהאתר (${KINDS[kind]}): ${type.name} – ${project}. יש להזין את גורמי התשתית הרלוונטיים.`;
+  for (const u of all) notify(u.id, text, link);
+  mailUsers(all, `בקשה חדשה ${created.number} – ${type.name}`, `שלום,\n\n${text}\nמגיש/ה: ${police.applicant_name}, ${phone}, ${email}\n\nלמיפוי הבקשה: ${linkTo(created.requestId)}\n\n${sysTitle()}`);
+  mailUsers([{ email }], `בקשה ${created.number} התקבלה – ${sysTitle()}`, `שלום ${police.applicant_name},\n\nבקשתך התקבלה ומספרה ${created.number}. הבקשה עוברת להמשך טיפול.\nאפשר לעקוב אחריה במערכת עם שם המשתמש ${username}: ${config.publicUrl}\n\n${getSetting('org.name')}`);
+  req.user = { id: created.userId, username };
+  audit(req, 'public_apply', { request: created.requestId, number: created.number, kind, type: type.key }, 'notice');
+  // כניסה אוטומטית כדי לעקוב אחרי הבקשה
+  const csrf = auth.createSession(res, created.userId, req, false);
+  return status(201, { ok: true, number: created.number, id: created.requestId, csrf });
+});
+
+// ---------------- ניהול סוגי בקשות ----------------
+function typeFields(b, cur = {}) {
+  const ids = (arr, table, name) => {
+    if (arr === undefined) return undefined;
+    if (!Array.isArray(arr) || arr.length > 50) throw new sec.ValidationError(`${name}: רשימה לא תקינה`);
+    const out = [...new Set(arr.map(x => v.id(x, { required: true, name })))];
+    for (const id of out) if (!db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)) throw new sec.ValidationError(`${name}: לא קיים`);
+    return out;
+  };
+  const role = (x, name) => {
+    if (x === undefined) return undefined; const id = v.id(x, { name }); if (!id) return null;
+    const r = db.prepare('SELECT * FROM roles WHERE id = ?').get(id);
+    if (!r) throw new sec.ValidationError(`${name}: תפקיד לא קיים`);
+    if (!safePublicRole(r)) throw new sec.ValidationError(`${name}: אי אפשר לתת לנרשמים מהציבור תפקיד עם הרשאות ניהול או צפייה בכל הבקשות`);
+    return id;
+  };
+  return {
+    name: v.str(b.name ?? cur.name, { required: true, max: 100, name: 'שם סוג הבקשה' }),
+    description: v.str(b.description ?? cur.description, { max: 500, name: 'תיאור' }),
+    active: b.active === undefined ? (cur.active ?? 1) : (b.active ? 1 : 0),
+    public: b.public === undefined ? (cur.public ?? 1) : (b.public ? 1 : 0),
+    handler_ids: ids(b.handler_ids, 'users', 'מטפלים'),
+    infra_chain: ids(b.infra_chain, 'infra_bodies', 'גורמי תשתית'),
+    role_resident: role(b.role_resident, 'תפקיד לתושב/ת'),
+    role_entrepreneur: role(b.role_entrepreneur, 'תפקיד ליזם'),
+  };
+}
+route('GET', '/api/admin/request-types', (req) => {
+  requirePerm(req, 'admin.settings');
+  return { items: typesAll().map(t => ({ ...t, handler_ids: JSON.parse(t.handler_ids), infra_chain: JSON.parse(t.infra_chain),
+    requests: db.prepare('SELECT COUNT(*) AS c FROM requests WHERE type = ?').get(t.key).c })),
+    roles: db.prepare('SELECT * FROM roles ORDER BY id').all().filter(safePublicRole).map(r => ({ id: r.id, name: r.name })) };
+});
+route('POST', '/api/admin/request-types', (req) => {
+  requirePerm(req, 'admin.settings');
+  const f = typeFields(req.body);
+  if (db.prepare('SELECT 1 FROM request_types WHERE name = ?').get(f.name)) throw new sec.ValidationError('סוג בקשה בשם זה קיים');
+  const sort = (db.prepare('SELECT MAX(sort) AS m FROM request_types').get().m || 0) + 1;
+  const info = db.prepare(`INSERT INTO request_types (key, name, description, active, public, handler_ids, infra_chain, role_resident, role_entrepreneur, sort) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run('t' + Date.now().toString(36), f.name, f.description, f.active, f.public, JSON.stringify(f.handler_ids || []), JSON.stringify(f.infra_chain || []), f.role_resident ?? null, f.role_entrepreneur ?? null, sort);
+  audit(req, 'request_type_created', { id: Number(info.lastInsertRowid), name: f.name }, 'notice');
+  return status(201, { id: Number(info.lastInsertRowid) });
+});
+route('PUT', '/api/admin/request-types/:id', (req) => {
+  requirePerm(req, 'admin.settings');
+  const cur = db.prepare('SELECT * FROM request_types WHERE id = ?').get(req.params.id);
+  if (!cur) throw new HttpError(404, 'לא נמצא');
+  const f = typeFields(req.body, cur);
+  if (db.prepare('SELECT 1 FROM request_types WHERE name = ? AND id != ?').get(f.name, cur.id)) throw new sec.ValidationError('סוג בקשה בשם זה קיים');
+  db.prepare(`UPDATE request_types SET name=?, description=?, active=?, public=?, handler_ids=?, infra_chain=?, role_resident=?, role_entrepreneur=? WHERE id=?`)
+    .run(f.name, f.description, f.active, f.public, f.handler_ids ? JSON.stringify(f.handler_ids) : cur.handler_ids, f.infra_chain ? JSON.stringify(f.infra_chain) : cur.infra_chain,
+      f.role_resident === undefined ? cur.role_resident : f.role_resident, f.role_entrepreneur === undefined ? cur.role_entrepreneur : f.role_entrepreneur, cur.id);
+  audit(req, 'request_type_updated', { id: cur.id }, 'notice');
+  return { ok: true };
+});
+route('DELETE', '/api/admin/request-types/:id', (req) => {
+  requirePerm(req, 'admin.settings');
+  const cur = db.prepare('SELECT * FROM request_types WHERE id = ?').get(req.params.id);
+  if (!cur) throw new HttpError(404, 'לא נמצא');
+  if (db.prepare('SELECT 1 FROM requests WHERE type = ?').get(cur.key)) throw new sec.ValidationError('יש בקשות מהסוג הזה – אפשר להשבית אותו, לא למחוק');
+  db.prepare('DELETE FROM request_types WHERE id = ?').run(cur.id);
+  audit(req, 'request_type_deleted', { id: cur.id, name: cur.name }, 'notice');
+  return { ok: true };
 });
 
 module.exports = { match };

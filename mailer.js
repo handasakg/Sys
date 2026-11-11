@@ -22,7 +22,8 @@ const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const encHeader = (s) => `=?UTF-8?B?${b64(clean(s))}?=`;
 const addr = (s) => { const m = clean(s).match(/<([^<>\s]+@[^<>\s]+)>|^([^<>\s]+@[^<>\s]+)$/); if (!m) throw new Error('כתובת דוא"ל לא תקינה'); return m[1] || m[2]; };
 
-function send({ to, subject, text }) {
+// attachments: [{ filename, content: Buffer, contentType }]
+function send({ to, subject, text, attachments = [] }) {
   const cfg = smtpConfig();
   if (!cfg) return Promise.reject(new Error('SMTP לא מוגדר'));
   const rcpt = addr(to); const from = addr(cfg.from);
@@ -68,10 +69,23 @@ function send({ to, subject, text }) {
       await cmd(`MAIL FROM:<${from}>`, /^250/);
       await cmd(`RCPT TO:<${rcpt}>`, /^25[01]/);
       await cmd('DATA', /^354/);
-      const body = b64(text).replace(/.{1,76}/g, '$&\r\n');
-      const msg = [`From: ${encHeader(cfg.from.replace(/<.*>/, '').trim() || 'מערכת תיאום הנדסי')} <${from}>`, `To: <${rcpt}>`, `Subject: ${encHeader(subject)}`,
-        `Date: ${new Date().toUTCString()}`, `Message-ID: <${Date.now()}.${Math.random().toString(36).slice(2)}@${from.split('@')[1]}>`,
-        'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', body].join('\r\n');
+      const wrap76 = (b) => b.toString('base64').replace(/.{1,76}/g, '$&\r\n');
+      const head = [`From: ${encHeader(cfg.from.replace(/<.*>/, '').trim() || 'מערכת תיאום הנדסי')} <${from}>`, `To: <${rcpt}>`, `Subject: ${encHeader(subject)}`,
+        `Date: ${new Date().toUTCString()}`, `Message-ID: <${Date.now()}.${Math.random().toString(36).slice(2)}@${from.split('@')[1]}>`, 'MIME-Version: 1.0'];
+      let msg;
+      if (!attachments.length) msg = [...head, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', wrap76(Buffer.from(text, 'utf8'))].join('\r\n');
+      else {
+        const bnd = 'b' + require('node:crypto').randomBytes(12).toString('hex');
+        const parts = [`--${bnd}`, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', wrap76(Buffer.from(text, 'utf8'))];
+        for (const a of attachments) {
+          const fname = clean(a.filename).replace(/["\\]/g, '_');
+          parts.push(`--${bnd}`, `Content-Type: ${clean(a.contentType || 'application/octet-stream')}; name="${encHeader(fname)}"`, 'Content-Transfer-Encoding: base64',
+            `Content-Disposition: attachment; filename="${encHeader(fname)}"`, '', wrap76(a.content));
+        }
+        parts.push(`--${bnd}--`, '');
+        msg = [...head, `Content-Type: multipart/mixed; boundary="${bnd}"`, '', ...parts].join('\r\n');
+      }
+      msg = msg.replace(/^\./gm, '..'); // dot-stuffing
       await cmd(msg + '\r\n.', /^250/);
       sock.write('QUIT\r\n');
       done = true; sock.end(); resolve(true);

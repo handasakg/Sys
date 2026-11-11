@@ -18,7 +18,7 @@ const MIME = {
   tif: 'image/tiff', tiff: 'image/tiff', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', doc: 'application/msword',
-  xls: 'application/vnd.ms-excel', zip: 'application/zip', dwg: 'application/acad', dxf: 'application/dxf',
+  xls: 'application/vnd.ms-excel', zip: 'application/zip', dwg: 'application/acad', dxf: 'application/dxf', dwf: 'model/vnd.dwf',
   txt: 'text/plain', csv: 'text/csv', odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet',
   rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed', kml: 'application/vnd.google-earth.kml+xml',
 };
@@ -46,6 +46,7 @@ const SIGNATURES = {
   pptx: b => starts(b, [0x50, 0x4b, 0x03, 0x04]), odt: b => starts(b, [0x50, 0x4b, 0x03, 0x04]), ods: b => starts(b, [0x50, 0x4b, 0x03, 0x04]),
   doc: b => starts(b, [0xd0, 0xcf, 0x11, 0xe0]), xls: b => starts(b, [0xd0, 0xcf, 0x11, 0xe0]),
   dwg: b => ascii(b, 'AC10'),
+  dwf: b => ascii(b, '(DWF V') || starts(b, [0x50, 0x4b, 0x03, 0x04]),
   dxf: b => looksText(b), txt: b => looksText(b), csv: b => looksText(b),
   rar: b => ascii(b, 'Rar!'), '7z': b => starts(b, [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]),
 };
@@ -75,13 +76,14 @@ function readBody(req, limit) {
 }
 
 // מפענח multipart/form-data פשוט (קובץ אחד + שדות טקסט)
-async function parseMultipart(req, limit) {
+// multi=true: מחזיר files = [{ name (שם השדה), filename, data }]
+async function parseMultipart(req, limit, { multi = false } = {}) {
   const ct = String(req.headers['content-type'] || '');
   const m = ct.match(/^multipart\/form-data;\s*boundary=(?:"([^"]+)"|([^\s;]+))/i);
   if (!m) throw new HttpError(400, 'פורמט העלאה לא תקין');
   const boundary = Buffer.from('--' + (m[1] || m[2]));
   const body = await readBody(req, (limit || maxBytes()) + 64 * 1024);
-  const fields = {}; let file = null;
+  const fields = {}; let file = null; const files = [];
   let pos = body.indexOf(boundary);
   while (pos !== -1) {
     const next = body.indexOf(boundary, pos + boundary.length);
@@ -94,12 +96,13 @@ async function parseMultipart(req, limit) {
       const name = (head.match(/name="([^"]{1,100})"/) || [])[1];
       const filename = (head.match(/filename="([^"]{0,255})"/) || [])[1];
       if (filename !== undefined) {
-        if (file) throw new HttpError(400, 'ניתן להעלות קובץ אחד בכל פעם');
-        file = { filename, data };
-      } else if (name) fields[name] = data.toString('utf8').slice(0, 2000);
+        if (multi) { if (filename) { if (files.length >= 10) throw new HttpError(400, 'יותר מדי קבצים'); files.push({ name, filename, data }); } }
+        else { if (file) throw new HttpError(400, 'ניתן להעלות קובץ אחד בכל פעם'); file = { filename, data }; }
+      } else if (name) fields[name] = data.toString('utf8').slice(0, 8000);
     }
     pos = next;
   }
+  if (multi) return { fields, files };
   if (!file || !file.filename) throw new HttpError(400, 'לא נבחר קובץ');
   return { fields, file };
 }
@@ -108,6 +111,24 @@ function safeOriginalName(name) {
   const base = path.basename(String(name).replace(/\\/g, '/')).normalize('NFC')
     .replace(/[\u0000-\u001f\u007f<>:"/\\|?*‪-‮⁦-⁩]/g, '_').trim();
   return (base || 'file').slice(0, 180);
+}
+
+// בדיקת קובץ אחד: סיומת מתוך allowed, גודל, תוכן תואם לסוג. מחזיר { original, ext, mime }
+function checkFile(filename, data, allowed, label = 'הקובץ') {
+  const original = safeOriginalName(filename);
+  const parts = original.toLowerCase().split('.'); const ext = parts.length > 1 ? parts.pop() : '';
+  if (parts.slice(1).some(p => FORBIDDEN_EXT.has(p))) throw new HttpError(415, `${label}: שם קובץ עם סיומת כפולה אסורה`);
+  if (!ext || FORBIDDEN_EXT.has(ext) || !allowed.includes(ext)) throw new HttpError(415, `${label}: מותר רק ${allowed.map(e => e.toUpperCase()).join(' או ')}`);
+  if (!data.length) throw new HttpError(400, `${label}: הקובץ ריק`);
+  if (data.length > maxBytes()) throw new HttpError(413, `${label}: הקובץ גדול מהמותר`);
+  const sig = SIGNATURES[ext];
+  if (looksDangerous(data) || (sig && !sig(data))) throw new HttpError(415, `${label}: תוכן הקובץ אינו תואם לסוג הקובץ`);
+  return { original, ext, mime: MIME[ext] || 'application/octet-stream' };
+}
+function storeBuffer(data) {
+  const stored = crypto.randomBytes(24).toString('hex');
+  fs.writeFileSync(path.join(config.uploadDir, stored), data, { mode: 0o600, flag: 'wx' });
+  return { stored, size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex') };
 }
 
 async function handleUpload(req) {
@@ -133,4 +154,4 @@ function storedPath(stored) {
   return path.join(config.uploadDir, stored);
 }
 
-module.exports = { handleUpload, storedPath, allowedExt, maxBytes, FORBIDDEN_EXT, MIME, readBody, parseMultipart, SIGNATURES };
+module.exports = { handleUpload, storedPath, allowedExt, maxBytes, FORBIDDEN_EXT, MIME, readBody, parseMultipart, SIGNATURES, checkFile, storeBuffer };

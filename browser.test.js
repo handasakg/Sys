@@ -44,7 +44,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await ctx0.close();
 
     // ---------- מובייל + מסכים ----------
-    const PAGES = ['#/', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/requests/new', '#/projects', `#/projects/${p1.id}`, '#/tasks', '#/reports', '#/schedule', '#/budget', '#/documents', '#/appearance', '#/account', '#/admin/users', '#/admin/roles', '#/admin/settings', '#/admin/audit', '#/admin/backups'];
+    const PAGES = ['#/', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/requests/new', '#/projects', `#/projects/${p1.id}`, '#/tasks', '#/reports', '#/schedule', '#/budget', '#/documents', '#/appearance', '#/account', '#/admin/users', '#/admin/roles', '#/admin/types', '#/admin/settings', '#/admin/audit', '#/admin/backups'];
     const consoleErrors = []; let xssFired = false;
     async function login(page) {
       await page.goto(base + '/'); await page.fill('input[name=username]', 'chief'); await page.fill('input[name=password]', adminPw);
@@ -333,7 +333,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     for (const p of PAGES) { await page.goto(base + '/' + p); await page.waitForTimeout(200); for (const h of await page.evaluate(() => [...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')))) hrefs.add(h); }
     const broken = [];
     for (const h of hrefs) {
-      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?|\/new)?|projects(\/\d+)?|tasks(\?mine=1)?|schedule|reports|budget|documents|appearance|account|admin\/(users|roles|settings|audit|backups)|forgot)$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
+      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?|\/new)?|projects(\/\d+)?|tasks(\?mine=1)?|schedule|reports|budget|documents|appearance|account|admin\/(users|roles|types|settings|audit|backups)|forgot|apply\?kind=(resident|entrepreneur))$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
       if (h === '#main') continue;
       const url = new URL(h, base + '/'); const st = (await ctx.request.get(url.href)).status();
       out.links.push({ href: h, status: st }); if (st >= 400) broken.push(`${h}:${st}`);
@@ -381,6 +381,77 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       await sp2.evaluate(() => { const e = new Event('beforeinstallprompt'); e.prompt = () => {}; e.userChoice = Promise.resolve({ outcome: 'dismissed' }); window.dispatchEvent(e); });
       rec('אפליקציה', 'בתוך האפליקציה המותקנת לא מוצג שום כפתור התקנה', await sp2.evaluate(() => document.querySelectorAll('.install-btn:not([hidden])').length === 0));
       await sctx.close();
+    }
+
+    // ---------- הגשת בקשה מהציבור (מובייל 390px) ----------
+    {
+      const actx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+      const ap = await actx.newPage(); const aErrs = []; ap.on('pageerror', e => aErrs.push(e.message));
+      await ap.goto(base + '/'); await ap.waitForSelector('.apply-btn');
+      const ctaFirst = await ap.evaluate(() => { const b = document.querySelector('.apply-btn').getBoundingClientRect(); const f = document.querySelector('input[name=username]').getBoundingClientRect(); return b.top < f.top && b.height >= 60; });
+      rec('הגשת בקשה', 'כפתור "הגשת בקשה" מודגש מעל טופס הכניסה', ctaFirst);
+      await ap.screenshot({ path: path.join(SHOTS, 'apply-cta.png') });
+      await ap.click('.apply-btn'); await ap.waitForSelector('dialog[open] .kind-grid');
+      const q = await ap.textContent('dialog[open] .kind-q');
+      rec('הגשת בקשה', 'נפתחת שאלה "האם אתה יזם או תושב/ת?" עם שתי בחירות', q.includes('האם אתה יזם או תושב/ת?') && (await ap.$$('dialog[open] .kind-card')).length === 2);
+      await ap.click('dialog[open] .kind-card >> text=תושב/ת'); await ap.waitForSelector('form.apply-form');
+      // שליחה ריקה – הודעת שגיאה ולא נשלח
+      await ap.click('form.apply-form button[type=submit]');
+      rec('הגשת בקשה', 'שליחה בלי שדות חובה נעצרת עם הודעה', await ap.isVisible('form.apply-form .form-error'));
+      await ap.fill('input[name=username]', 'רונית אברהם'); await ap.fill('form.apply-form input[name=password]', 'Br' + 'Apply' + 'Test' + '2026x');
+      await ap.selectOption('select[name=type]', { index: 1 });
+      await ap.fill('input[name=email]', 'ronit@example.com'); await ap.fill('form.apply-form input[name=phone]', '050-1234567');
+      await ap.fill('input[name=address]', 'רחוב הנרקיס 7, קריית גת'); await ap.fill('form.apply-form input[name=project]', 'חיבור ביוב לבית פרטי');
+      const pdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
+      await ap.setInputFiles('#f-route_plan', { name: 'tvai.txt', mimeType: 'text/plain', buffer: Buffer.from('x') });
+      rec('הגשת בקשה', 'תוכנית תוואי דוחה קובץ שאינו PDF/DWF כבר בבחירה', (await ap.textContent('.file-card.bad .file-name')).includes('PDF'));
+      await ap.setInputFiles('#f-route_plan', { name: 'tvai.pdf', mimeType: 'application/pdf', buffer: pdf });
+      await ap.setInputFiles('#f-work_request', { name: 'bakasha.pdf', mimeType: 'application/pdf', buffer: pdf });
+      await ap.click('form.apply-form button[type=submit]');
+      rec('הגשת בקשה', 'בלי טופס משטרה – הבקשה לא נשלחת', (await ap.textContent('form.apply-form .form-error')).includes('משטרה'));
+      await ap.click('.police-card'); await ap.waitForSelector('dialog[open] form.police-form');
+      await ap.screenshot({ path: path.join(SHOTS, 'apply-police.png') });
+      await ap.fill('.police-form input[name=applicant_name]', 'רונית אברהם');
+      await ap.click('.police-form .seg button >> text=ח.פ'); await ap.click('.police-form .seg button >> text=תעודת זהות');
+      await ap.fill('.police-form input[name=id_number]', '123456789');
+      await ap.fill('.police-form textarea[name=description]', 'חפירה במדרכה לחיבור ביוב'); await ap.fill('.police-form input[name=work_time]', 'א׳-ה׳');
+      await ap.fill('.police-form input[name=work_hours]', '07:00-16:00'); await ap.fill('.police-form input[name=contact]', 'משה הקבלן 052-7654321');
+      await ap.click('dialog[open] .dlg-foot .btn.primary');
+      rec('הגשת בקשה', 'ת.ז לא תקינה נדחית בטופס המשטרה', (await ap.textContent('dialog[open] .form-error')).includes('תעודת הזהות'));
+      await ap.fill('.police-form input[name=id_number]', '000000018'); await ap.click('dialog[open] .dlg-foot .btn.primary');
+      await ap.waitForSelector('.police-card.done');
+      rec('הגשת בקשה', 'טופס המשטרה נשמר ומסומן "מולא"', (await ap.textContent('.pol-status')) === 'מולא');
+      const ovf = await ap.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      rec('הגשת בקשה', 'טופס ההגשה בלי גלילה אופקית ב-390px', ovf <= 0, 'overflow=' + ovf);
+      await ap.screenshot({ path: path.join(SHOTS, 'apply-form.png'), fullPage: true });
+      await ap.click('form.apply-form button[type=submit]');
+      await ap.waitForSelector('dialog[open] .apply-done', { timeout: 15000 });
+      const num = (await ap.textContent('dialog[open] .done-num')).trim(); const msg = await ap.textContent('dialog[open] .apply-done');
+      rec('הגשת בקשה', 'אחרי השליחה: "הבקשה הוגשה בהצלחה ותעבור להמשך טיפול" + מספר בקשה', msg.includes('הבקשה הוגשה בהצלחה ותעבור להמשך טיפול') && num.length > 2, num);
+      await ap.screenshot({ path: path.join(SHOTS, 'apply-done.png') });
+      await ap.click('dialog[open] .btn.primary'); await ap.waitForSelector('.req-number');
+      rec('הגשת בקשה', 'המגיש מחובר אוטומטית ורואה את הבקשה שלו', (await ap.textContent('.req-number')).trim() === num);
+      const docsTxt = await ap.textContent('#docs-h + *, section[aria-labelledby=docs-h]');
+      rec('הגשת בקשה', 'טופס המשטרה (PDF) לא גלוי למגיש', !/משטרה/.test(docsTxt) && /tvai\.pdf/.test(docsTxt), docsTxt.slice(0, 120));
+      rec('הגשת בקשה', 'אין שגיאות JavaScript בזרימת ההגשה', aErrs.length === 0, aErrs.join(' | '));
+      await actx.close();
+      // מנהל: רואה את טופס המשטרה כמסמך מוגבל, וממפה גורמים בסדר
+      const mctx = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const mp = await mctx.newPage();
+      await login(mp); await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('table, .empty');
+      await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
+      rec('הגשת בקשה', 'מנהל המערכת רואה את טופס המשטרה כמסמך "מוגבל"', await mp.isVisible('.lock-chip'));
+      await mp.click('text=בחירת גורמים וסדר'); await mp.waitForSelector('dialog[open] .order-rest');
+      await mp.click('dialog[open] .order-rest button >> nth=0'); await mp.click('dialog[open] .order-rest button >> nth=0');
+      await mp.click('dialog[open] .order-list li:nth-child(2) button[aria-label^="העלאה"]');
+      const firstName = (await mp.textContent('dialog[open] .order-list li:nth-child(1) .grow')).trim();
+      await mp.click('dialog[open] .dlg-foot .btn.primary'); await mp.waitForSelector('.approvals.ordered');
+      await mp.click('text=העברה לבדיקה'); await mp.click('dialog[open] .dlg-foot .btn.primary'); await mp.waitForSelector('.approval.turn');
+      const turnName = await mp.textContent('.approval.turn .who');
+      rec('הגשת בקשה', 'גורמים נשמרים בסדר שנבחר, והראשון מסומן "התור הנוכחי"', turnName.includes(firstName) && turnName.includes('התור הנוכחי'), turnName);
+      await mp.screenshot({ path: path.join(SHOTS, 'request-turn.png'), fullPage: true });
+      await mp.goto(base + '/#/admin/types'); await mp.waitForSelector('.type-card');
+      rec('הגשת בקשה', 'מסך "סוגי בקשות" מציג את הסוגים עם מטפלים וגורמים', (await mp.$$('.type-card')).length >= 3);
+      await mctx.close();
     }
 
     // ---------- ביצועים ----------

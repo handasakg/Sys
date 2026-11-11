@@ -129,9 +129,27 @@ db.exec(`CREATE TABLE IF NOT EXISTS user_requests (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
   PRIMARY KEY (user_id, request_id))`);
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('docs.visibility', 'own')").run();
+// סוגי בקשות שמוגדרים מלוח הבקרה (במקום רשימה קבועה בקוד)
+db.exec(`CREATE TABLE IF NOT EXISTS request_types (
+  id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, active INTEGER NOT NULL DEFAULT 1, public INTEGER NOT NULL DEFAULT 1,
+  handler_ids TEXT NOT NULL DEFAULT '[]', infra_chain TEXT NOT NULL DEFAULT '[]', role_resident INTEGER REFERENCES roles(id), role_entrepreneur INTEGER REFERENCES roles(id),
+  sort INTEGER NOT NULL DEFAULT 0)`);
+if (db.prepare('SELECT COUNT(*) AS c FROM request_types').get().c === 0) {
+  const { TYPES } = require('./workflow'); let i = 0;
+  for (const [k, n] of Object.entries(TYPES)) db.prepare('INSERT INTO request_types (key, name, sort) VALUES (?, ?, ?)').run(k, n, i++);
+}
+db.exec(`CREATE TABLE IF NOT EXISTS request_police (request_id INTEGER PRIMARY KEY REFERENCES requests(id) ON DELETE CASCADE, data TEXT NOT NULL)`);
+// תפקידים ציבוריים חדשים גם במסדים קיימים
+for (const r of require('./permissions').DEFAULT_ROLES.filter(x => ['תושב/ת', 'יזם'].includes(x.name))) db.prepare('INSERT OR IGNORE INTO roles (name, perms) VALUES (?, ?)').run(r.name, JSON.stringify(r.perms));
 // הרחבות סכמה למסדים קיימים
 const hasCol = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some(x => x.name === c);
 if (!hasCol('sessions', 'remember')) db.exec('ALTER TABLE sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 0');
+for (const [t, c, def] of [['users', 'applicant_kind', 'TEXT'], ['users', 'address', 'TEXT'], ['requests', 'applicant_kind', 'TEXT'], ['requests', 'project_name', 'TEXT'],
+  ['request_approvals', 'seq', 'INTEGER NOT NULL DEFAULT 0'], ['request_approvals', 'notified_at', 'TEXT'], ['documents', 'visibility', "TEXT NOT NULL DEFAULT 'default'"]]) {
+  if (!hasCol(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
+}
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('approval.guidelines', ?)").run(require('./documents').DEFAULT_GUIDELINES);
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('public.apply', '1')").run();
 for (const [k, val] of Object.entries({ 'requests.prefix': 'TH', 'requests.with_year': '1', 'requests.pad': '4' })) db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, val);
 
 function tx(fn) {
