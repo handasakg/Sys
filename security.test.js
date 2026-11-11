@@ -14,6 +14,18 @@ const rnd = () => crypto.randomInt(1, 254);
 const pw = () => 'Tst' + crypto.randomBytes(9).toString('base64url') + '7a';
 const APPLY_PW = 'סיסמה' + crypto.randomBytes(6).toString('hex') + '9';
 // בקשות נפתחות רק מהגשה באתר. בדיקות שצריכות בקשה מוכנה יוצרות אותה ישירות במסד (seedReq) או דרך ההגשה הציבורית (applyPublic)
+// בונה ZIP קטן (כמו קובצי Word/Excel) לבדיקת התצוגה המקדימה
+function makeZip(files) {
+  const zlib = require('node:zlib'); const locals = []; const central = []; let off = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const data = Buffer.from(text, 'utf8'); const comp = zlib.deflateRawSync(data); const crc = zlib.crc32(data); const nb = Buffer.from(name, 'utf8');
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x800, 6); lh.writeUInt16LE(8, 8); lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(nb.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x800, 8); ch.writeUInt16LE(8, 10); ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(nb.length, 28); ch.writeUInt32LE(off, 42);
+    locals.push(lh, nb, comp); central.push(ch, nb); off += 30 + nb.length + comp.length;
+  }
+  const cd = Buffer.concat(central); const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(central.length / 2, 8); end.writeUInt16LE(central.length / 2, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
+  return Buffer.concat([...locals, cd, end]);
+}
 let seedN = 0;
 function seedReq(db, applicantId, f = {}) {
   const number = f.number || `SEED-${process.pid}-${++seedN}`;
@@ -221,13 +233,10 @@ class Client {
     r = await users.applB.c.req('GET', '/api/requests?scope=all');
     rec('הרשאות (IDOR)', 'רשימת "כל הבקשות" מסוננת לפי הרשאה', r.data.items.every(x => x.applicant_id === users.applB.id));
     r = await A.req('POST', `/api/requests/${reqId}/track`, { decision: 'approved' });
-    rec('הרשאות', 'מבקש לא יכול לאשר לעצמו מסלול מזורז', r.status === 403);
+    rec('מסלול', 'המסלול (רגיל / מזורז) הוסר מהמערכת – גם מהשרת ומההרשאות', r.status === 404 && !(await admin.req('GET', '/api/admin/permissions')).data.items.some(x => x.key === 'requests.approve_track'));
     r = await A.req('POST', `/api/requests/${reqId}/status`, { status: 'approved' });
     rec('הרשאות', 'מבקש לא יכול לאשר את הבקשה של עצמו', r.status === 400 || r.status === 403, r.data.error);
     const E = users.eng.c;
-    r = await E.req('POST', `/api/requests/${reqId}/track`, { decision: 'approved' });
-    const afterTrack = db.prepare('SELECT track, track_status FROM requests WHERE id=?').get(reqId);
-    rec('תהליך', 'מהנדס מאשר מסלול מזורז', r.status === 200 && afterTrack.track_status === 'approved');
     await E.req('POST', `/api/requests/${reqId}/assign`, { assignee_id: users.eng.id });
     await E.req('POST', `/api/requests/${reqId}/status`, { status: 'review' });
     await E.req('POST', `/api/requests/${reqId}/approvals`, { infra_body_ids: [infra[0].id, infra[1].id] });
@@ -749,6 +758,57 @@ class Client {
         const mh = await fetch(b5 + '/map.html'); const csp = mh.headers.get('content-security-policy') || ''; const mainCsp = (await fetch(b5 + '/')).headers.get('content-security-policy') || '';
         rec('מיקום', 'עמוד המפה מורשה לטעון רק את GovMap ורק בתוך האתר עצמו; שאר האתר נשאר חסום', mh.status === 200 && /script-src 'self' https:\/\/www\.govmap\.gov\.il/.test(csp) && /frame-ancestors 'self'/.test(csp) && mh.headers.get('x-frame-options') === 'SAMEORIGIN'
           && !/govmap/.test(mainCsp) && /frame-ancestors 'none'/.test(mainCsp), csp.slice(0, 90));
+      }
+      // זמן העבודה מטופס המשטרה עובר לבקשה
+      rec('זמן עבודה', 'זמן העבודה מטופס המשטרה מופיע גם בבקשה עצמה, לכל מי שמטפל בה', av.data.request.work_time === police.work_time && mv.data.request.work_time === police.work_time, av.data.request.work_time);
+      // צפייה בקבצים בלי להוריד
+      {
+        const rp = av.data.documents.find(d => d.category === 'בקשת עבודה'); const dwfDoc = av.data.documents.find(d => d.category === 'תוכנית תוואי');
+        const dwfV = await appl.req('GET', `/api/documents/${dwfDoc.id}/view`);
+        const vw = await appl.req('GET', `/api/documents/${rp.id}/view`, undefined, { raw: true });
+        const vcsp = vw.headers.get('content-security-policy') || '';
+        const polV = await appl.req('GET', `/api/documents/${polDoc.id}/view`);
+        const polM = await mapper.c.req('GET', `/api/documents/${polDoc.id}/view`, undefined, { raw: true });
+        rec('צפייה בקבצים', 'PDF נפתח לצפייה בתוך המערכת (inline) בלי הורדה, ורק בתוך האתר עצמו', vw.status === 200 && /^inline/.test(vw.headers.get('content-disposition')) && vw.headers.get('content-type') === 'application/pdf'
+          && /frame-ancestors 'self'/.test(vcsp) && /script-src 'none'/.test(vcsp) && vw.headers.get('x-frame-options') === 'SAMEORIGIN' && dwfV.status === 415, `${vw.status} ${vw.headers.get('content-type')} ${vw.headers.get('content-disposition')} ${vcsp}`);
+        rec('צפייה בקבצים', 'הרשאות הצפייה זהות להורדה: טופס המשטרה המוגבל לא נפתח למגיש', polV.status === 404 && polM.status === 200);
+        // Word / Excel: תצוגת טקסט וטבלאות
+        const docx = makeZip({ '[Content_Types].xml': '<Types/>', 'word/document.xml': '<w:document><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>כותרת המסמך</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">שלום </w:t></w:r><w:r><w:t>עולם &amp; &lt;b&gt;</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>תא א</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>תא ב</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>' });
+        const xlsx = makeZip({ 'xl/workbook.xml': '<workbook><sheets><sheet name="נתונים" sheetId="1" r:id="rId1"/></sheets></workbook>', 'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+          'xl/sharedStrings.xml': '<sst><si><t>שם</t></si><si><t>כמות</t></si><si><t>צינור</t></si></sst>', 'xl/worksheets/sheet1.xml': '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="C2"><v>42</v></c></row></sheetData></worksheet>' });
+        const upOffice = async (buf, name) => { const fd = new FormData(); fd.append('request_id', String(reqId5)); fd.append('category', 'כללי'); fd.append('file', new Blob([buf]), name); return (await mapper.c.req('POST', '/api/documents', fd)).data.id; };
+        const dId = await upOffice(docx, 'מכתב.docx'); const xId = await upOffice(xlsx, 'כמויות.xlsx');
+        const pd = await mapper.c.req('GET', `/api/documents/${dId}/preview`); const px = await mapper.c.req('GET', `/api/documents/${xId}/preview`);
+        rec('צפייה בקבצים', 'קובץ Word מוצג כטקסט (כותרות, פסקאות וטבלאות) בלי הורדה', pd.status === 200 && pd.data.kind === 'doc' && pd.data.blocks[0].type === 'h' && pd.data.blocks[0].text === 'כותרת המסמך'
+          && pd.data.blocks[1].text === 'שלום עולם & <b>' && pd.data.blocks[2].type === 'table' && pd.data.blocks[2].rows[0].join('|') === 'תא א|תא ב', JSON.stringify(pd.data).slice(0, 160));
+        rec('צפייה בקבצים', 'קובץ Excel מוצג כטבלה לפי גיליונות', px.status === 200 && px.data.sheets[0].name === 'נתונים' && px.data.sheets[0].rows[1].join('|') === 'צינור||42', JSON.stringify(px.data).slice(0, 160));
+        const notView = await mapper.c.req('GET', `/api/documents/${dId}/view`);
+        const bomb = await upOffice(makeZip({ 'word/document.xml': '<w:document><w:body>' + '<w:p><w:r><w:t>x</w:t></w:r></w:p>'.repeat(5000) + '</w:body></w:document>' }), 'ארוך.docx');
+        const pb = await mapper.c.req('GET', `/api/documents/${bomb}/preview`);
+        rec('צפייה בקבצים', 'סוגים שהדפדפן לא מציג בבטחה לא נפתחים ישירות, ומסמך ענק מוצג חלקית', notView.status === 415 && pb.status === 200 && pb.data.truncated === true && pb.data.blocks.length === 3000);
+      }
+      // משימות: רק מנהל המערכת ורכז תיאום מקצים; האחראי הוא גורם תשתית ואיש הקשר שלו מקבל את המשימה
+      {
+        const bodyId = infra5[0].id;
+        const noContact = await mapper.c.req('POST', '/api/tasks', { title: 'בדיקת שוחות', infra_body_id: bodyId });
+        const byBody = await b1.c.req('POST', '/api/tasks', { title: 'x', infra_body_id: bodyId });
+        const asgB1 = await b1.c.req('GET', '/api/tasks/assignees');
+        await ad.req('PUT', `/api/admin/infra/${bodyId}`, { contact_user_id: b1.id });
+        const asg = await mapper.c.req('GET', '/api/tasks/assignees');
+        mails.length = 0;
+        const tk = await mapper.c.req('POST', '/api/tasks', { title: 'בדיקת שוחות ברחוב הגפן', infra_body_id: bodyId, due_date: '2026-12-01', request_id: reqId5 });
+        await new Promise(res => setTimeout(res, 500));
+        const row = db5.prepare('SELECT assignee_id, infra_body_id FROM tasks WHERE id = ?').get(tk.data.id);
+        const tm = mails.find(m => m.to === 'b1@example.gov.il');
+        const tmText = tm ? tm.body + Buffer.from((tm.body.split(/\n\n/).slice(1).join('\n\n').match(/[A-Za-z0-9+/=\n]{40,}/) || [''])[0].replace(/\s+/g, ''), 'base64').toString('utf8') : '';
+        rec('משימות', 'רק מנהל המערכת ורכז תיאום מקצים משימות (גורם תשתית לא יכול)', byBody.status === 403 && asgB1.status === 403 && tk.status === 201, `${byBody.status} ${asgB1.status} ${tk.status}`);
+        rec('משימות', 'ברשימת האחראים מופיעים גורמי התשתית עם איש הקשר שהוגדר להם', asg.status === 200 && asg.data.items.some(x => x.id === bodyId && x.contact_id === b1.id) && noContact.status === 400 && /איש קשר/.test(noContact.data.error), noContact.data && noContact.data.error);
+        rec('משימות', 'המשימה מגיעה לאיש הקשר של הגורם – בהודעה ובאימייל', row.assignee_id === b1.id && row.infra_body_id === bodyId && /בדיקת שוחות ברחוב הגפן/.test(tmText) && /#\/tasks/.test(tmText));
+        const myT = await b1.c.req('GET', '/api/tasks'); const st = await b1.c.req('PUT', `/api/tasks/${tk.data.id}`, { status: 'בביצוע', title: 'שינוי' }); const del = await b1.c.req('DELETE', `/api/tasks/${tk.data.id}`);
+        const after = db5.prepare('SELECT status, title FROM tasks WHERE id = ?').get(tk.data.id);
+        rec('משימות', 'איש הקשר רואה את המשימה ומעדכן רק את הסטטוס שלה', myT.data.items.some(t => t.id === tk.data.id && t.infra_name) && st.status === 200 && after.status === 'בביצוע' && after.title === 'בדיקת שוחות ברחוב הגפן' && del.status === 403);
+        const me1 = await mapper.c.req('GET', '/api/auth/me'); const me2 = await b1.c.req('GET', '/api/auth/me');
+        rec('משימות', 'הממשק יודע מי מורשה להקצות משימות', me1.data.user.can_assign_tasks === true && me2.data.user.can_assign_tasks === false);
       }
       // סדר טיפול עם דוא"ל
       mails.length = 0;

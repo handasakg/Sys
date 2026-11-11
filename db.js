@@ -147,14 +147,16 @@ if (!hasCol('sessions', 'remember')) db.exec('ALTER TABLE sessions ADD COLUMN re
 for (const [t, c, def] of [['users', 'applicant_kind', 'TEXT'], ['users', 'address', 'TEXT'], ['requests', 'applicant_kind', 'TEXT'], ['requests', 'project_name', 'TEXT'],
   ['request_approvals', 'seq', 'INTEGER NOT NULL DEFAULT 0'], ['request_approvals', 'notified_at', 'TEXT'], ['documents', 'visibility', "TEXT NOT NULL DEFAULT 'default'"],
   ['requests', 'fix_auto_approval', 'INTEGER'], ['requests', 'fix_auto_by', 'INTEGER'],
-  ['requests', 'loc_x', 'REAL'], ['requests', 'loc_y', 'REAL'], ['requests', 'loc_z', 'REAL'], ['requests', 'loc_label', 'TEXT']]) {
+  ['requests', 'loc_x', 'REAL'], ['requests', 'loc_y', 'REAL'], ['requests', 'loc_z', 'REAL'], ['requests', 'loc_label', 'TEXT'],
+  ['requests', 'work_time', 'TEXT'], ['infra_bodies', 'contact_user_id', 'INTEGER'], ['tasks', 'infra_body_id', 'INTEGER']]) {
   if (!hasCol(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
 }
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('approval.guidelines', ?)").run(require('./documents').DEFAULT_GUIDELINES);
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('public.apply', '1')").run();
 // שם הארגון המלא, ותיאור מסך הכניסה (נערך מהגדרות וקבצים)
 db.prepare("UPDATE settings SET value = 'מינהל הנדסה עיריית קריית גת' WHERE key = 'org.name' AND value = 'מינהל הנדסה'").run();
-db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('login.text', 'בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה – כל גורמי התשתית על אותו מסלול, וכל אחד רואה מה ממתין לו.')").run();
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('login.text', 'בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה – כל גורמי התשתית במקום אחד, וכל אחד רואה מה ממתין לו.')").run();
+db.prepare("UPDATE settings SET value = ? WHERE key = 'login.text' AND value = ?").run('בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה – כל גורמי התשתית במקום אחד, וכל אחד רואה מה ממתין לו.', 'בקשות לתיאום תכנון, אישורי ביצוע וגמר עבודה – כל גורמי התשתית על אותו מסלול, וכל אחד רואה מה ממתין לו.');
 // הוסרו מהמערכת: בקשה חדשה פנימית, פרויקטים, תקציב ולוח זמנים. מנקים את ההרשאות הישנות,
 // ושם הפרויקט של בקשות ישנות נשמר כטקסט בבקשה. הטבלאות הישנות נשארות בלי שימוש כדי שלא יימחקו נתונים.
 {
@@ -168,6 +170,8 @@ db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('login.text', '�
   }
   db.exec("UPDATE requests SET project_name = (SELECT name FROM projects p WHERE p.id = requests.project_id) WHERE project_id IS NOT NULL AND (project_name IS NULL OR project_name = '')");
 }
+// זמן העבודה מטופס המשטרה עובר גם לבקשה עצמה
+db.exec("UPDATE requests SET work_time = (SELECT json_extract(p.data, '$.work_time') FROM request_police p WHERE p.request_id = requests.id) WHERE work_time IS NULL AND EXISTS (SELECT 1 FROM request_police p WHERE p.request_id = requests.id)");
 for (const [k, val] of Object.entries({ 'requests.prefix': 'TH', 'requests.with_year': '1', 'requests.pad': '4' })) db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, val);
 
 function tx(fn) {

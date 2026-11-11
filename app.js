@@ -45,6 +45,7 @@
     home2: 'M3 10l9-7 9 7M5 9v11h14V9',
     building: 'M4 21V4h10v17M14 9h6v12M7 8h2M7 12h2M7 16h2M17 13h1M17 17h1',
     lock: 'M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4',
+    eye: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
     pin: 'M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21zM12 12.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
     external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
     db: 'M4 6c0-2 16-2 16 0v12c0 2-16 2-16 0zM4 6c0 2 16 2 16 0M4 12c0 2 16 2 16 0',
@@ -212,11 +213,6 @@
   const T = (k) => (S.meta && S.meta.types[k]) || k;
   const ST = (k) => (S.meta && S.meta.statuses[k]) || k;
   const statusChip = (s) => h('span', { class: 'chip st-' + s }, ST(s));
-  function trackChip(r) {
-    if (r.track === 'fast' && r.track_status === 'approved') return h('span', { class: 'chip fast' }, 'מזורז');
-    if (r.track_status === 'pending') return h('span', { class: 'chip st-coordination' }, 'ממתין למסלול מזורז');
-    return null;
-  }
   function markClass(name) {
     const n = String(name);
     if (/מים|ביוב|תאגיד/.test(n)) return 'm-water';
@@ -292,11 +288,9 @@
   }
   function authShell(formContent, { wide = false } = {}) {
     const art = h('section', { class: 'auth-art', 'aria-label': 'אודות המערכת' }, authBackdrop(),
-      h('div', { class: 'auth-art-top' }, h('span', { class: 'auth-org' }, S.org || '')),
-      h('div', null,
+      h('div', { class: 'auth-art-top' }, h('span', { class: 'auth-org' }, S.org || ''),
         h('h1', null, (S.login && S.login.heading) || S.title || 'מערכת תיאום הנדסי'),
-        S.login && S.login.text ? h('p', { class: 'auth-desc' }, S.login.text) : null),
-      h('div'));
+        S.login && S.login.text ? h('p', { class: 'auth-desc' }, S.login.text) : null));
     const logo = h('div', { class: 'auth-logo-wrap' }, h('img', { class: 'auth-logo', src: logoUrl(), alt: `לוגו ${S.org}` }));
     root.replaceChildren(h('div', { class: 'auth' + (wide ? ' wide' : '') }, art, h('main', { class: 'auth-form', id: 'main' }, h('div', { class: 'box' }, logo, formContent))));
   }
@@ -322,6 +316,51 @@
   }
   const validId = (id) => { if (!/^\d{5,9}$/.test(id)) return false; const s9 = id.padStart(9, '0'); let sum = 0; for (let i = 0; i < 9; i++) { let n = +s9[i] * ((i % 2) + 1); if (n > 9) n -= 9; sum += n; } return sum % 10 === 0; };
   const phoneOk = (p) => /^0\d{8,9}$/.test(String(p).replace(/[\s\-()]/g, '').replace(/^\+972/, '0'));
+  // ---------- צפייה בקבצים בלי להוריד ----------
+  const extOf = (name) => (String(name || '').split('.').pop() || '').toLowerCase();
+  const VIEW_KIND = { pdf: 'pdf', png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', txt: 'text', csv: 'text', docx: 'office', xlsx: 'office' };
+  const viewKind = (f) => VIEW_KIND[extOf(f.original_name)] || null;
+  function viewBtn(f, { label = 'צפייה', cls = 'btn sm' } = {}) {
+    if (!can('files.download')) return null;
+    return h('button', { class: cls, type: 'button', 'aria-label': `צפייה ב${f.original_name}`, onclick: () => fileViewer(f) }, icon('eye'), label);
+  }
+  function fileViewer(f) {
+    const kind = viewKind(f);
+    const url = `/api/documents/${f.id}/view`;
+    const body = h('div', { class: 'viewer-body' });
+    const actions = [h('a', { class: 'btn primary', href: `/api/documents/${f.id}/download` }, icon('download'), 'הורדה'),
+      ['pdf', 'image', 'text'].includes(kind) ? h('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener' }, icon('external'), 'פתיחה בלשונית חדשה') : null,
+      h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'סגירה')].filter(Boolean);
+    const m = modal(f.original_name, body, actions);
+    m.dlg.classList.add('viewer-dlg');
+    const fail = (msg) => body.replaceChildren(h('div', { class: 'viewer-empty' }, icon('file'), h('p', null, msg), h('a', { class: 'btn primary', href: `/api/documents/${f.id}/download` }, icon('download'), 'הורדת הקובץ')));
+    if (kind === 'pdf') body.append(h('iframe', { class: 'viewer-frame', src: url, title: `תצוגת ${f.original_name}` }));
+    else if (kind === 'image') body.append(h('div', { class: 'viewer-img' }, h('img', { src: url, alt: f.original_name, onerror: () => fail('לא ניתן להציג את התמונה.') })));
+    else if (kind === 'text') {
+      body.append(h('p', { class: 'muted', role: 'status' }, 'טוען…'));
+      fetch(url, { credentials: 'same-origin' }).then(r => (r.ok ? r.text() : Promise.reject(new Error()))).then(t => body.replaceChildren(h('pre', { class: 'viewer-text', dir: 'auto' }, t.slice(0, 500000)))).catch(() => fail('לא ניתן להציג את הקובץ.'));
+    } else if (kind === 'office') {
+      body.append(h('p', { class: 'muted', role: 'status' }, 'טוען…'));
+      api('GET', `/api/documents/${f.id}/preview`).then(p => body.replaceChildren(officeView(p))).catch(ex => fail(ex.message || 'לא ניתן להציג את הקובץ.'));
+    } else fail(`אין תצוגה מקדימה לקובץ מסוג ${extOf(f.original_name).toUpperCase() || 'זה'} בדפדפן. אפשר להוריד אותו ולפתוח בתוכנה המתאימה.`);
+    return m;
+  }
+  // Word: פסקאות וטבלאות; Excel: גיליון בכל לשונית. הכל כטקסט בלבד
+  function officeView(p) {
+    const table = (rows, head) => h('div', { class: 'viewer-table' }, h('table', null, h('tbody', null, rows.map((r, i) => h('tr', null, r.map(c => h(head && i === 0 ? 'th' : 'td', { dir: 'auto' }, c)))))));
+    if (p.kind === 'doc') {
+      const out = h('div', { class: 'viewer-doc', dir: 'auto' }, p.blocks.map(b => b.type === 'table' ? table(b.rows, false) : b.type === 'h' ? h('h' + (b.level + 1), { dir: 'auto' }, b.text) : b.text.trim() ? h('p', { dir: 'auto' }, b.text) : h('p', { class: 'blank' })));
+      if (p.truncated) out.append(h('p', { class: 'muted' }, 'המסמך ארוך – מוצג החלק הראשון. להצגה מלאה הורידו את הקובץ.'));
+      return out;
+    }
+    const wrap = h('div', { class: 'viewer-sheets' });
+    const panel = h('div', { id: 'tabpanel', role: 'tabpanel' });
+    const show = (i) => { const sh = p.sheets[i]; panel.replaceChildren(sh.rows.length ? table(sh.rows, true) : h('p', { class: 'muted' }, 'הגיליון ריק.'), sh.truncated ? h('p', { class: 'muted' }, 'מוצגות 1,000 השורות הראשונות.') : null); };
+    if (p.sheets.length > 1) wrap.append(tabBar('גיליונות', p.sheets.map((sh, i) => [String(i), sh.name]), '0', (k) => show(Number(k))));
+    wrap.append(panel); show(0);
+    return wrap;
+  }
+
   // ---------- מיקום במפת GovMap ----------
   const KG = { x: 177750, y: 613200, level: 6 };
   const govmapUrl = (loc) => loc ? `https://www.govmap.gov.il/?c=${loc.x},${loc.y}&z=${loc.z || 9}` : `https://www.govmap.gov.il/?c=${KG.x},${KG.y}&z=${KG.level}&q=${encodeURIComponent('קריית גת')}`;
@@ -593,6 +632,22 @@
   const isPublicUser = () => !!(S.me && S.me.applicant_kind);
   const isSysUser = () => !!(S.me && S.me.is_sysadmin);
   const hiddenFor = (who) => !!who && ((who.includes('public') && isPublicUser()) || (who.includes('sys') && isSysUser()));
+  // טקסט הסבר בשדה (placeholder) שמתאים את עצמו לרוחב: הנוסח הארוך ביותר שנכנס בלי להיחתך.
+  // הנוסח המלא נשאר ב-title ובתווית, כך שלא הולך מידע לאיבוד
+  const fitCtx = document.createElement('canvas').getContext('2d');
+  function fitPlaceholder(input, options) {
+    const fit = () => {
+      const cs = getComputedStyle(input); const room = input.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 6;
+      if (room <= 0) return;
+      fitCtx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      input.placeholder = options.find(t => fitCtx.measureText(t).width <= room) || options[options.length - 1];
+    };
+    if (!input.title) input.title = options[0];
+    input.placeholder = options[options.length - 1];
+    if ('ResizeObserver' in window) new ResizeObserver(() => fit()).observe(input);
+    requestAnimationFrame(fit); setTimeout(fit, 300);
+    return fit;
+  }
   let shell = null;
   function renderShell() {
     const nav = h('nav', { class: 'nav', 'aria-label': 'ניווט ראשי' });
@@ -626,14 +681,7 @@
     const menuBtn = h('button', { class: 'btn ghost icon-btn menu-btn', type: 'button', 'aria-label': 'פתיחת תפריט', 'aria-controls': 'sidebar', 'aria-expanded': 'false', onclick: () => toggleSidebar(true) }, icon('menu'));
     // חיפוש עליון: טקסט ההסבר מתאים את עצמו לרוחב השדה, כדי שלא ייחתך
     const gsearch = h('input', { id: 'gsearch', name: 'q', type: 'search', maxlength: 100, title: 'חיפוש לפי מספר בקשה, נושא או כתובת', placeholder: 'חיפוש בקשה' });
-    const PH = ['חיפוש לפי מספר בקשה, נושא או כתובת', 'חיפוש לפי מספר, נושא או כתובת', 'חיפוש מספר, נושא או כתובת', 'חיפוש בקשה', 'חיפוש'];
-    const fitPh = () => {
-      const cs = getComputedStyle(gsearch); const room = gsearch.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 4;
-      if (room <= 0) return;
-      const c = fitPh.ctx || (fitPh.ctx = document.createElement('canvas').getContext('2d')); c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-      gsearch.placeholder = PH.find(t => c.measureText(t).width <= room) || PH[PH.length - 1];
-    };
-    if ('ResizeObserver' in window) new ResizeObserver(() => fitPh()).observe(gsearch);
+    const fitPh = fitPlaceholder(gsearch, ['חיפוש לפי מספר בקשה, נושא או כתובת', 'חיפוש לפי מספר, נושא או כתובת', 'חיפוש מספר, נושא או כתובת', 'חיפוש בקשה', 'חיפוש']);
     const top = h('header', { class: 'topbar' }, menuBtn,
       h('form', { role: 'search', class: 'grow', onsubmit: (e) => { e.preventDefault(); const q = e.target.q.value.trim(); location.hash = '#/requests?scope=' + (can('requests.view_all') ? 'all' : 'mine') + (q ? '&q=' + encodeURIComponent(q) : ''); } },
         h('label', { for: 'gsearch', class: 'sr-only' }, 'חיפוש בקשה'),
@@ -1022,8 +1070,6 @@
         kpi(k.assignedToMe + d.pendingApprovals.length, 'ממתינות לטיפולי', '#/requests?scope=pending_me'),
         kpi(k.open, 'בקשות פתוחות', can('requests.view_all') ? '#/requests?scope=all' : '#/requests?scope=mine'),
         kpi(k.overdue, 'חרגו מזמן הטיפול', null, true),
-        kpi(k.fast, 'במסלול מזורז'),
-        kpi(k.trackPending, 'ממתינות לאישור מסלול'),
         kpi(k.approved, 'אושרו')),
       h('div', { class: 'charts', style: { 'margin-bottom': '16px' } }, reportCharts(rep6, { compact: true })),
       h('p', { class: 'small', style: { margin: '-6px 0 16px' } }, h('a', { href: '#/reports' }, 'לכל הדוחות והגרפים')),
@@ -1074,7 +1120,8 @@
     const { items } = await api('GET', '/api/requests?' + new URLSearchParams({ scope }));
     // הסינון מתבצע מיד עם כל שינוי – בלי כפתור. החיפוש והסינון חלים על שתי הלשוניות
     const st = { tab: q.tab === 'done' ? 'done' : 'open', q: q.q || '', status: q.status || '', type: q.type || '' };
-    const search = h('input', { id: 'fq', name: 'q', type: 'search', value: st.q, maxlength: 100, placeholder: 'מספר, נושא, כתובת או מגיש', autocomplete: 'off' });
+    const search = h('input', { id: 'fq', name: 'q', type: 'search', value: st.q, maxlength: 100, autocomplete: 'off' });
+    fitPlaceholder(search, ['מספר בקשה, נושא, כתובת או מגיש', 'מספר, נושא, כתובת או מגיש', 'מספר, נושא או כתובת', 'מספר או נושא', 'חיפוש']);
     const statusSel = sel('status', [['', 'הכל'], ...Object.entries(S.meta.statuses).filter(([k]) => k !== 'draft')], st.status, { id: 'fs' });
     const typeSel = sel('type', [['', 'הכל'], ...Object.entries(S.meta.types)], st.type, { id: 'ft' });
     const filters = h('form', { class: 'toolbar', role: 'search', 'aria-label': 'סינון בקשות', onsubmit: (e) => e.preventDefault() },
@@ -1155,6 +1202,7 @@
       h('div', { class: 'row' },
         field('תחילת עבודה מתוכננת', inp('planned_start', { type: 'date', value: r.planned_start || '' })),
         field('סיום עבודה מתוכנן', inp('planned_end', { type: 'date', value: r.planned_end || '' }))),
+      field('זמן עבודה', inp('work_time', { value: r.work_time || '', maxlength: 200, placeholder: 'למשל: ימים א׳-ה׳' }), { hint: 'מגיע אוטומטית מטופס המשטרה בהגשת הבקשה.' }),
       h('div', { class: 'actions', style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap' } },
         h('button', { class: 'btn primary', type: 'submit', value: 'save' }, 'שמירת שינויים'),
         h('a', { class: 'btn ghost', href: `#/requests/${id}` }, 'ביטול')));
@@ -1176,7 +1224,7 @@
     const off = ['returned', 'rejected'].includes(r.status);
     if (r.status === 'returned') idx = 1; if (r.status === 'rejected') idx = 2;
     const n = ROUTE_STEPS.length;
-    const wrap = h('ol', { class: 'route', 'aria-label': 'מסלול הבקשה', style: { '--n': n, '--p': Math.round(idx / (n - 1) * 88) + '%' } }, h('span', { class: 'bar', 'aria-hidden': 'true' }));
+    const wrap = h('ol', { class: 'route', 'aria-label': 'שלבי הבקשה', style: { '--n': n, '--p': Math.round(idx / (n - 1) * 88) + '%' } }, h('span', { class: 'bar', 'aria-hidden': 'true' }));
     ROUTE_STEPS.forEach((s, i) => {
       const cls = i < idx ? 'done' : i === idx ? (off ? 'off' : 'now') : '';
       const label = i === idx && off ? ST(r.status) : ST(s);
@@ -1219,8 +1267,7 @@
       h('dt', null, 'מועדי עבודה'), h('dd', null, r.planned_start ? `${fmtDate(r.planned_start)} – ${fmtDate(r.planned_end)}` : '—'),
       h('dt', null, 'הוגשה'), h('dd', null, fmtDateTime(r.submitted_at)),
       h('dt', null, 'יעד לטיפול'), h('dd', null, r.due_at ? h('span', { class: r.overdue ? 'sev-critical' : '' }, fmtDate(r.due_at), r.overdue ? ' (בחריגה)' : '') : '—'),
-      h('dt', null, 'מסלול'), h('dd', null, S.meta.tracks[r.track], ' · ', S.meta.trackStatus[r.track_status],
-        d.can.approveTrack && r.track_status === 'pending' ? [' ', h('button', { class: 'btn sm primary', type: 'button', onclick: () => trackDialog(r, reload) }, 'החלטה על מסלול')] : null));
+      h('dt', null, 'זמן עבודה'), h('dd', null, r.work_time || '—'));
 
     // גורמי תשתית
     const active = ['review', 'coordination'].includes(r.status);
@@ -1259,7 +1306,7 @@
     const okDoc = d.approvalDoc ? h('section', { class: 'panel approval-doc', 'aria-labelledby': 'ok-h' },
       h('span', { class: 'ok-ic', 'aria-hidden': 'true' }, icon('check')),
       h('div', null, h('h2', { id: 'ok-h' }, 'אישור לביצוע עבודה'), h('p', { class: 'small muted' }, `הופק ${fmtDateTime(d.approvalDoc.created_at)} · נשלח גם לאימייל של המגיש`)),
-      h('a', { class: 'btn primary', href: `/api/documents/${d.approvalDoc.id}/download` }, icon('download'), 'הורדת האישור (PDF)')) : null;
+      h('span', { class: 'ok-actions' }, viewBtn(d.approvalDoc, { label: 'צפייה באישור', cls: 'btn' }), h('a', { class: 'btn primary', href: `/api/documents/${d.approvalDoc.id}/download` }, icon('download'), 'הורדת האישור (PDF)'))) : null;
 
     // מסמכים
     const docs = docsPanel(d.documents, { request_id: id }, d.can.upload, reload, d.docsOwnOnly);
@@ -1276,9 +1323,9 @@
 
     main.replaceChildren(
       h('div', { class: 'req-head' }, h('div', { class: 'req-number' }, r.number),
-        h('div', null, h('h1', { class: 'req-title' }, r.title), h('div', null, statusChip(r.status), ' ', trackChip(r), r.overdue ? h('span', { class: 'chip late' }, 'חרגה מזמן הטיפול') : null)),
+        h('div', null, h('h1', { class: 'req-title' }, r.title), h('div', null, statusChip(r.status), r.overdue ? h('span', { class: 'chip late' }, 'חרגה מזמן הטיפול') : null)),
         h('div', { class: 'actions', style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap' } }, actions)),
-      h('section', { class: 'panel', 'aria-label': 'מסלול הבקשה' }, routeLine(r)), ...(okDoc ? [okDoc] : []),
+      h('section', { class: 'panel', 'aria-label': 'שלבי הבקשה' }, routeLine(r)), ...(okDoc ? [okDoc] : []),
       h('div', { class: 'grid side' },
         h('div', null, h('section', { class: 'panel' }, h('h2', null, 'פרטי הבקשה'), h('div', { class: 'details-with-map' }, info, locFigure), r.description ? [h('h3', { style: { 'margin-top': '16px' } }, 'תיאור'), h('p', { style: { 'white-space': 'pre-wrap' } }, r.description)] : null), appr, hist),
         h('div', null, docs, d.tasks.length ? h('section', { class: 'panel' }, h('h2', null, 'משימות קשורות'), h('ul', { class: 'files' }, d.tasks.map(t => h('li', null, h('span', { class: 'fname' }, t.title), h('span', { class: 'small muted' }, t.assignee_name || ''), h('span', { class: 'chip plain st-draft' }, t.status))))) : null)));
@@ -1319,20 +1366,7 @@
       try { await api('POST', `/api/requests/${r.id}/assign`, formData(form)); m.close(); toast('הבקשה הוקצתה'); reload(); } catch (ex) { showErr(err, ex.message); }
     });
   }
-  function trackDialog(r, reload) {
-    const err = errBox();
-    const form = h('form', { novalidate: true }, err, h('p', null, 'המגיש ביקש מסלול מזורז. הנימוק מופיע בהיסטוריה של הבקשה.'),
-      h('fieldset', null, h('legend', null, 'החלטה'),
-        h('label', { class: 'check' }, h('input', { type: 'radio', name: 'decision', value: 'approved', required: true }), 'אישור מסלול מזורז'),
-        h('label', { class: 'check' }, h('input', { type: 'radio', name: 'decision', value: 'rejected' }), 'דחייה – המשך במסלול רגיל')),
-      field('הערה', area('comment', { rows: 2, maxlength: 1000 })));
-    const m = modal('אישור מסלול', form, [h('button', { class: 'btn primary', type: 'button', onclick: () => form.requestSubmit() }, 'שמירת החלטה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const dec = form.querySelector('[name=decision]:checked'); if (!dec) return showErr(err, 'יש לבחור החלטה.');
-      try { await api('POST', `/api/requests/${r.id}/track`, { decision: dec.value, comment: form.comment.value }); m.close(); toast('החלטת המסלול נשמרה'); reload(); } catch (ex) { showErr(err, ex.message); }
-    });
-  }
+
   // רשימה מסודרת: בחירה + שינוי סדר עם כפתורי למעלה/למטה (נגיש למקלדת)
   function orderedPicker(items, selectedIds, legend) {
     let order = selectedIds.filter(id => items.some(b => b.id === id));
@@ -1381,7 +1415,7 @@
     const list = h('ul', { class: 'files' }, docs.map(f => h('li', null,
       h('span', { class: 'fname' }, f.original_name, f.visibility === 'restricted' ? h('span', { class: 'chip lock-chip', title: 'גלוי רק למנהל המערכת ולאחראי מיפוי בקשות' }, icon('lock'), 'מוגבל') : null, f.visibility === 'shared' ? h('span', { class: 'chip ok-chip' }, 'מסמך רשמי') : null),
       h('span', { class: 'small muted' }, `${fmtSize(f.size)} · ${f.uploaded_by_name} · ${fmtDate(f.created_at)}`),
-      can('files.download') ? h('a', { class: 'btn sm', href: `/api/documents/${f.id}/download`, 'aria-label': `הורדת ${f.original_name}` }, icon('download'), 'הורדה') : null,
+      viewBtn(f), can('files.download') ? h('a', { class: 'btn sm', href: `/api/documents/${f.id}/download`, 'aria-label': `הורדת ${f.original_name}` }, icon('download'), 'הורדה') : null,
       (can('files.delete_all') || (can('files.delete_own') && f.uploaded_by === S.me.id)) ? h('button', { class: 'btn sm danger', type: 'button', 'aria-label': `מחיקת ${f.original_name}`, onclick: async () => {
         if (!(await confirmDlg('מחיקת קובץ', `למחוק את "${f.original_name}"?`, 'מחיקה', true))) return;
         try { await api('DELETE', `/api/documents/${f.id}`); toast('הקובץ נמחק'); reload(); } catch (ex) { toast(ex.message, true); }
@@ -1434,7 +1468,7 @@
     const docRow = (d) => h('li', null,
       h('span', { class: 'fname' }, d.original_name, d.visibility === 'restricted' ? h('span', { class: 'chip lock-chip' }, icon('lock'), 'מוגבל') : null, d.visibility === 'shared' ? h('span', { class: 'chip ok-chip' }, 'מסמך רשמי') : null),
       h('span', { class: 'small muted' }, `${fmtSize(d.size)} · ${d.uploaded_by_name} · ${fmtDate(d.created_at)}`),
-      can('files.download') ? h('a', { class: 'btn sm', href: `/api/documents/${d.id}/download`, 'aria-label': `הורדת ${d.original_name}` }, icon('download'), 'הורדה') : null);
+      h('span', { class: 'file-actions' }, viewBtn(d), can('files.download') ? h('a', { class: 'btn sm', href: `/api/documents/${d.id}/download`, 'aria-label': `הורדת ${d.original_name}` }, icon('download'), 'הורדה') : null));
     const box = h('div', { class: 'doc-groups', id: 'tabpanel', role: 'tabpanel' });
     const live = h('p', { class: 'small muted', role: 'status', 'aria-live': 'polite' });
     const tabs = tabBar('מצב הבקשות', [['open', 'בקשות פתוחות'], ['done', 'בקשות שטופלו']], st.tab, (k) => { st.tab = k; openSet.clear(); draw(); });
@@ -1464,7 +1498,8 @@
       try { history.replaceState(null, '', '#/documents?tab=' + st.tab); } catch { /* */ }
       if (shell) for (const a of shell.nav.querySelectorAll('a')) { if (a.dataset.href === '#/documents?tab=' + st.tab) a.setAttribute('aria-current', 'page'); else if (a.dataset.href.startsWith('#/documents')) a.removeAttribute('aria-current'); }
     }
-    const search = h('input', { type: 'search', id: 'dsearch', placeholder: 'שם קובץ, מספר בקשה או נושא', maxlength: 100, autocomplete: 'off' });
+    const search = h('input', { type: 'search', id: 'dsearch', maxlength: 100, autocomplete: 'off' });
+    fitPlaceholder(search, ['שם קובץ, מספר בקשה או נושא', 'קובץ, מספר בקשה או נושא', 'קובץ או מספר בקשה', 'חיפוש']);
     let tmr = 0;
     search.addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(() => { st.q = search.value.trim(); draw(); }, 150); });
     const toggleAll = (open) => { for (const d of box.querySelectorAll('details')) d.open = open; };
@@ -1476,33 +1511,38 @@
   }
 
   // ---------- משימות ----------
+  // רק מנהל המערכת ורכז תיאום מקצים משימות; האחראי הוא גורם תשתית, והמשימה מגיעה לאיש הקשר שלו
+  const canAssignTasks = () => !!(S.me && S.me.can_assign_tasks);
   function tasksTable(items, reload, defaults = {}) {
     const wrap = h('div');
-    if (can('tasks.manage')) wrap.append(h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', type: 'button', onclick: () => taskDialog(defaults, reload) }, icon('plus'), 'משימה חדשה')));
+    if (canAssignTasks()) wrap.append(h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', type: 'button', onclick: () => taskDialog(defaults, reload) }, icon('plus'), 'משימה חדשה')));
     wrap.append(tableOf([
       { label: 'משימה', render: t => h('span', null, t.title, t.request_number ? h('div', { class: 'small muted ltr' }, t.request_number) : null) },
-      { label: 'אחראי', render: t => t.assignee_name || '—' },
+      { label: 'אחראי', render: t => t.infra_name ? h('span', null, t.infra_name, t.assignee_name ? h('div', { class: 'small muted' }, 'איש קשר: ' + t.assignee_name) : null) : (t.assignee_name || '—') },
       { label: 'עדיפות', render: t => t.priority === 'דחופה' || t.priority === 'גבוהה' ? h('span', { class: 'chip ' + (t.priority === 'דחופה' ? 'late' : 'st-coordination') }, t.priority) : t.priority },
       { label: 'יעד', render: t => { const late = t.due_date && t.due_date < today() && t.status !== 'הושלמה'; return h('span', { class: late ? 'sev-critical' : '' }, fmtDate(t.due_date), late ? ' (באיחור)' : ''); } },
       { label: 'סטטוס', render: t => {
-        if (!(can('tasks.manage') || t.assignee_id === S.me.id)) return t.status;
+        if (!(canAssignTasks() || t.assignee_id === S.me.id)) return t.status;
         const s = sel('status', ['פתוחה', 'בביצוע', 'ממתינה', 'הושלמה'].map(x => [x, x]), t.status, { 'aria-label': 'סטטוס משימה ' + t.title, style: { 'min-height': '36px', width: 'auto' } });
         s.addEventListener('change', async () => { try { await api('PUT', `/api/tasks/${t.id}`, { status: s.value }); toast('הסטטוס עודכן'); } catch (ex) { toast(ex.message, true); s.value = t.status; } });
         return s;
       } },
-      { label: '', render: t => can('tasks.manage') ? h('span', { style: { display: 'flex', gap: '6px' } },
+      { label: '', render: t => canAssignTasks() ? h('span', { style: { display: 'flex', gap: '6px' } },
         h('button', { class: 'btn sm', type: 'button', 'aria-label': 'עריכת ' + t.title, onclick: () => taskDialog(t, reload) }, icon('edit')),
         h('button', { class: 'btn sm danger', type: 'button', 'aria-label': 'מחיקת ' + t.title, onclick: async () => { if (await confirmDlg('מחיקת משימה', `למחוק את "${t.title}"?`, 'מחיקה', true)) { try { await api('DELETE', `/api/tasks/${t.id}`); reload(); } catch (ex) { toast(ex.message, true); } } } }, icon('trash'))) : '' },
     ], items, { caption: 'משימות', empty: h('p', { class: 'empty' }, 'אין משימות.') }));
     return wrap;
   }
   async function taskDialog(t, done) {
-    const users = await api('GET', '/api/users/lookup');
+    const { items: bodies } = await api('GET', '/api/tasks/assignees');
     const err = errBox();
+    const assignee = sel('infra_body_id', [['', 'בחרו גורם תשתית'], ...bodies.map(b => [b.id, b.contact_name ? `${b.name} – ${b.contact_name}` : `${b.name} (לא הוגדר איש קשר)`])], t.infra_body_id || '');
+    for (const o of assignee.options) { const b = bodies.find(x => String(x.id) === o.value); if (b && !b.contact_name) o.disabled = true; }
+    const noContacts = bodies.length && !bodies.some(b => b.contact_name);
     const form = h('form', { novalidate: true }, err,
       field('כותרת', inp('title', { value: t.title || '', maxlength: 200 }), { required: true }),
-      h('div', { class: 'row' },
-        field('אחראי', sel('assignee_id', [['', 'ללא'], ...users.items.map(u => [u.id, u.full_name])], t.assignee_id))),
+      field('אחראי (גורם תשתית)', assignee, { required: true, hint: 'המשימה נשלחת לאיש הקשר של הגורם, בהודעה ובאימייל.' }),
+      noContacts || !bodies.length ? h('p', { class: 'form-error', role: 'alert' }, 'עדיין לא הוגדר איש קשר לאף גורם תשתית. מגדירים אותו בתפקידים והרשאות ← גורמי תשתית.') : null,
       h('div', { class: 'row' }, field('עדיפות', sel('priority', ['נמוכה', 'רגילה', 'גבוהה', 'דחופה'].map(x => [x, x]), t.priority || 'רגילה')),
         field('סטטוס', sel('status', ['פתוחה', 'בביצוע', 'ממתינה', 'הושלמה'].map(x => [x, x]), t.status || 'פתוחה'))),
       h('div', { class: 'row' }, field('התחלה', inp('start_date', { type: 'date', value: t.start_date || '' })), field('תאריך יעד', inp('due_date', { type: 'date', value: t.due_date || '' }))),
@@ -1510,14 +1550,15 @@
     const m = modal(t.id ? 'עריכת משימה' : 'משימה חדשה', form, [h('button', { class: 'btn primary', type: 'button', onclick: () => form.requestSubmit() }, 'שמירה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); if (!validate(form, err)) return;
-      try { await api(t.id ? 'PUT' : 'POST', t.id ? `/api/tasks/${t.id}` : '/api/tasks', formData(form)); m.close(); toast('המשימה נשמרה'); done(); } catch (ex) { showErr(err, ex.message); }
+      const data = { ...formData(form), request_id: t.request_id || null };
+      try { await api(t.id ? 'PUT' : 'POST', t.id ? `/api/tasks/${t.id}` : '/api/tasks', data); m.close(); toast('המשימה נשמרה ונשלחה לאיש הקשר'); done(); } catch (ex) { showErr(err, ex.message); }
     });
   }
   async function viewTasks(main, q) {
     const mine = q.mine === '1';
     const { items } = await api('GET', '/api/tasks' + (mine ? '?mine=1' : ''));
-    main.replaceChildren(pageHead('משימות', can('tasks.manage') ? (mine ? 'המשימות שלי' : 'כל המשימות') : 'המשימות שהוקצו לך',
-      can('tasks.manage') ? h('a', { class: 'btn', href: mine ? '#/tasks' : '#/tasks?mine=1' }, mine ? 'הצגת כל המשימות' : 'רק המשימות שלי') : null), tasksTable(items, () => viewTasks(main, q)));
+    main.replaceChildren(pageHead('משימות', canAssignTasks() ? (mine ? 'המשימות שלי' : 'כל המשימות') : 'המשימות שהוקצו לך',
+      canAssignTasks() ? h('a', { class: 'btn', href: mine ? '#/tasks' : '#/tasks?mine=1' }, mine ? 'הצגת כל המשימות' : 'רק המשימות שלי') : null), tasksTable(items, () => viewTasks(main, q)));
   }
 
   // ---------- עיצוב ותצוגה ----------
@@ -1607,7 +1648,7 @@
     function previewChartsBuild() { const c = reportCharts(sample, { compact: true }); return [c[0], c[2]]; }
     previewCharts = h('div', { class: 'charts' }, previewChartsBuild());
     const preview = h('section', { class: 'panel preview', 'aria-label': 'תצוגה מקדימה' }, h('h2', null, 'תצוגה מקדימה'),
-      h('div', { class: 'req-head' }, h('div', { class: 'req-number' }, 'TH-2026-0042'), h('div', null, h('div', { class: 'req-title' }, 'הנחת קו מים ברחוב הדוגמה'), h('div', null, statusChip('coordination'), ' ', h('span', { class: 'chip fast' }, 'מזורז')))),
+      h('div', { class: 'req-head' }, h('div', { class: 'req-number' }, 'TH-2026-0042'), h('div', null, h('div', { class: 'req-title' }, 'הנחת קו מים ברחוב הדוגמה'), h('div', null, statusChip('coordination')))),
       routeLine({ status: 'coordination' }),
       h('div', { class: 'approvals', style: { margin: '12px 0' } }, [['מים וביוב (תאגיד)', 'approved', 'אישר'], ['חברת החשמל', 'pending', 'ממתין']].map(([n, dd, l]) => h('div', { class: 'approval' }, h('span', { class: 'mark ' + markClass(n) }), h('div', null, h('div', { class: 'who' }, n), h('div', { class: 'note dec-' + dd }, l)), h('span')))),
       previewCharts,
@@ -1790,7 +1831,9 @@
       const dErr = errBox();
       const form = h('form', { novalidate: true }, dErr,
         field('שם הגורם', inp('name', { value: b.name, maxlength: 100 }), { required: true }),
-        field('איש קשר', inp('contact', { value: b.contact || '', maxlength: 200 })),
+        field('איש קשר למשימות', sel('contact_user_id', [['', 'לא הוגדר'], ...users.items.map(u => [u.id, `${u.full_name} (${u.role_name})`])], b.contact_user_id || ''),
+          { hint: 'משימה שמוקצית לגורם הזה נשלחת לאיש הקשר, בהודעה במערכת ובאימייל.' }),
+        field('פרטי קשר נוספים (טלפון וכו׳)', inp('contact', { value: b.contact || '', maxlength: 200 })),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'active', checked: !!b.active }), 'גורם פעיל (מופיע בבחירת גורמים לבקשה)'),
         h('fieldset', null, h('legend', null, 'משתמשים שמשויכים לגורם'),
           h('p', { class: 'small muted' }, 'משתמש משויך רואה את הבקשות שהגורם נדרש להן ונותן חוות דעת בשמו. משתמש יכול להיות משויך לגורם אחד.'),
@@ -1800,13 +1843,13 @@
       form.addEventListener('submit', async (e) => {
         e.preventDefault(); if (!validate(form, dErr)) return;
         const member_ids = [...form.querySelectorAll('input[name^="m"]:checked')].map(i => Number(i.value));
-        try { await api('PUT', `/api/admin/infra/${b.id}`, { name: form.elements.name.value, contact: form.contact.value, active: form.active.checked, member_ids }); m.close(); toast('הגורם עודכן'); reload(); } catch (ex) { showErr(dErr, ex.message); }
+        try { await api('PUT', `/api/admin/infra/${b.id}`, { name: form.elements.name.value, contact: form.contact.value, contact_user_id: form.contact_user_id.value ? Number(form.contact_user_id.value) : null, active: form.active.checked, member_ids }); m.close(); toast('הגורם עודכן'); reload(); } catch (ex) { showErr(dErr, ex.message); }
       });
     }
     box.replaceChildren(h('p', { class: 'muted' }, 'הגופים שנותנים חוות דעת על בקשות (מים, חשמל, תקשורת…). כאן מוסיפים, עורכים ומשייכים אליהם משתמשים.'), err, add,
       h('div', { class: 'approvals' }, items.map(b => h('div', { class: 'approval' }, h('span', { class: 'mark ' + markClass(b.name), 'aria-hidden': 'true' }),
         h('div', null, h('div', { class: 'who' }, b.name, b.active ? null : h('span', { class: 'chip st-closed', style: { 'margin-inline-start': '8px' } }, 'מושבת')),
-          h('div', { class: 'note' }, b.contact || 'ללא איש קשר', ` · ${b.members.length ? 'משויכים: ' + b.members.map(m => m.full_name).join(', ') : 'אין משתמשים משויכים'} · ${b.requests} בקשות`)),
+          h('div', { class: 'note' }, b.contact_user_name ? `איש קשר: ${b.contact_user_name}` : 'לא הוגדר איש קשר', b.contact ? ` (${b.contact})` : '', ` · ${b.members.length ? 'משויכים: ' + b.members.map(m => m.full_name).join(', ') : 'אין משתמשים משויכים'} · ${b.requests} בקשות`)),
         h('span', { style: { display: 'flex', gap: '6px', 'flex-wrap': 'wrap' } },
           h('button', { class: 'btn sm', type: 'button', onclick: () => editDialog(b) }, icon('edit'), 'עריכה'),
           h('button', { class: 'btn sm danger', type: 'button', 'aria-label': `מחיקת ${b.name}`, onclick: async () => {
@@ -1907,10 +1950,9 @@
       try { await api('PUT', '/api/admin/settings', { allowed_ext: ext, max_mb: files.max_mb.value, docs_visibility: files.querySelector('[name=docs_visibility]:checked').value }); toast('הגדרות הקבצים נשמרו'); await refreshMe(); reload(); } catch (ex) { showErr(fErr, ex.message); }
     });
     const gErr = errBox();
-    const general = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'כללי ומסלולי טיפול'), gErr,
+    const general = h('form', { class: 'panel', novalidate: true }, h('h2', null, 'כללי וזמני טיפול'), gErr,
       h('div', { class: 'row' }, field('שם המערכת', inp('system_title', { value: s.system_title, maxlength: 100 }), { required: true }), field('שם הארגון', inp('org_name', { value: s.org_name, maxlength: 100 }), { required: true })),
-      h('div', { class: 'row' }, field('ימי טיפול – מסלול רגיל', inp('sla_regular_days', { type: 'number', min: 1, max: 365, value: s.sla_regular_days }), { required: true }),
-        field('ימי טיפול – מסלול מזורז', inp('sla_fast_days', { type: 'number', min: 1, max: 60, value: s.sla_fast_days }), { required: true })),
+      field('ימי טיפול לבקשה', inp('sla_regular_days', { type: 'number', min: 1, max: 365, value: s.sla_regular_days }), { required: true, hint: 'מועד היעד לטיפול נקבע לפי מספר הימים מההגשה.' }),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'public_apply', checked: s.public_apply }), 'כפתור "הגשת בקשה" פתוח לתושבים וליזמים במסך הכניסה'),
       h('button', { class: 'btn primary', type: 'submit' }, 'שמירה'));
     general.addEventListener('submit', async (e) => {

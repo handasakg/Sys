@@ -9,7 +9,6 @@ const PERMISSIONS = [
   { key: 'requests.delete', group: 'בקשות תיאום', label: 'מחיקת בקשות' },
   { key: 'requests.assign', group: 'בקשות תיאום', label: 'הקצאת בקשה לגורם מטפל' },
   { key: 'requests.change_status', group: 'בקשות תיאום', label: 'קידום סטטוס בקשה' },
-  { key: 'requests.approve_track', group: 'בקשות תיאום', label: 'אישור מסלול (רגיל / מזורז)' },
   { key: 'requests.final_approve', group: 'בקשות תיאום', label: 'מתן אישור סופי (תכנון / ביצוע / גמר)' },
   { key: 'approvals.decide', group: 'בקשות תיאום', label: 'מתן חוות דעת גורם תשתית' },
   { key: 'requests.mapping', group: 'בקשות תיאום', label: 'אחראי מיפוי בקשות: קבלת בקשות חדשות מהציבור, הזנת גורמים, צפייה בכל המסמכים כולל טופס משטרה' },
@@ -20,7 +19,6 @@ const PERMISSIONS = [
   { key: 'files.delete_all', group: 'מסמכים וקבצים', label: 'מחיקת כל קובץ' },
   // משימות
   { key: 'tasks.view', group: 'משימות', label: 'צפייה במשימות' },
-  { key: 'tasks.manage', group: 'משימות', label: 'יצירה, עריכה ומחיקה של משימות' },
   // ניהול
   { key: 'admin.users', group: 'ניהול מערכת', label: 'ניהול משתמשים' },
   { key: 'admin.roles', group: 'ניהול מערכת', label: 'ניהול תפקידים והרשאות' },
@@ -33,8 +31,8 @@ const KEYS = new Set(PERMISSIONS.map(p => p.key));
 
 const DEFAULT_ROLES = [
   { name: 'מנהל מערכת', system: 1, perms: PERMISSIONS.map(p => p.key) },
-  { name: 'מהנדס / מאשר', system: 0, perms: ['requests.view_all', 'requests.edit_all', 'requests.assign', 'requests.change_status', 'requests.approve_track', 'requests.final_approve', 'approvals.decide', 'files.upload', 'files.download', 'files.delete_own', 'tasks.view', 'tasks.manage'] },
-  { name: 'רכז תיאום', system: 0, perms: ['requests.view_all', 'requests.edit_all', 'requests.assign', 'requests.change_status', 'files.upload', 'files.download', 'files.delete_own', 'tasks.view', 'tasks.manage'] },
+  { name: 'מהנדס / מאשר', system: 0, perms: ['requests.view_all', 'requests.edit_all', 'requests.assign', 'requests.change_status', 'requests.final_approve', 'approvals.decide', 'files.upload', 'files.download', 'files.delete_own', 'tasks.view'] },
+  { name: 'רכז תיאום', system: 0, perms: ['requests.view_all', 'requests.edit_all', 'requests.assign', 'requests.change_status', 'files.upload', 'files.download', 'files.delete_own', 'tasks.view'] },
   { name: 'גורם תשתית', system: 0, perms: ['requests.view_own', 'approvals.decide', 'files.upload', 'files.download', 'files.delete_own', 'tasks.view'] },
   { name: 'מבקש / יזם', system: 0, perms: ['requests.view_own', 'requests.edit_own', 'files.upload', 'files.download', 'files.delete_own'] },
   { name: 'תושב/ת', system: 0, perms: ['requests.view_own', 'files.upload', 'files.download', 'files.delete_own'] },

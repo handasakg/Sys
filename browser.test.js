@@ -7,6 +7,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_PATH || '/opt/npm-tools/node
 
 const ROOT = __dirname;
 const SHOTS = path.join(os.tmpdir(), 'coord-shots'); fs.mkdirSync(SHOTS, { recursive: true });
+let engPwOut = '';
 const out = { checks: [], mobile: [], contrast: [], a11y: [], links: [], perf: {} };
 const rec = (area, name, pass, detail = '') => { out.checks.push({ area, name, pass, detail: String(detail).slice(0, 400) }); console.log(`${pass ? 'PASS' : 'FAIL'} [${area}] ${name}${detail ? ' – ' + String(detail).slice(0, 200) : ''}`); };
 const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
@@ -26,7 +27,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     let csrf = (await (await api.post(base + '/api/auth/login', { headers: { 'X-Requested-With': 'fetch' }, data: { username: 'chief', password: adminPw } })).json()).csrf;
     const call = async (m, u, d) => { const r = await api.fetch(base + u, { method: m, headers: { 'X-Requested-With': 'fetch', 'X-CSRF-Token': csrf }, data: d }); return r.json(); };
     const roles = (await call('GET', '/api/admin/roles')).items; const rid = n => roles.find(r => r.name === n).id;
-    const engPw = pw(); const eng = await call('POST', '/api/admin/users', { username: 'yossi', full_name: 'יוסי כהן', role_id: rid('מהנדס / מאשר'), password: engPw, department: 'מינהל הנדסה', no_infra: true, no_request: true });
+    const engPw = pw(); engPwOut = engPw; const eng = await call('POST', '/api/admin/users', { username: 'yossi', full_name: 'יוסי כהן', role_id: rid('מהנדס / מאשר'), password: engPw, department: 'מינהל הנדסה', no_infra: true, no_request: true });
     const reqs = [];
     for (const [type, title, addr] of [['planning', 'תיאום תכנון להנחת קו מים 8"', 'רחוב הורדים 12'], ['execution', 'אישור חפירה להעתקת כבל חשמל', 'שדרות ירושלים 40'], ['completion', 'אישור גמר עבודה – תשתית תקשורת', 'רחוב הגפן 3'], ['execution', '<img src=x onerror=alert(1)> בדיקת XSS', '"><script>alert(2)</script>']]) {
       // בקשות נפתחות רק מהגשה באתר; לנתוני ההדגמה יוצרים אותן ישירות במסד
@@ -44,7 +45,8 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await call('POST', `/api/requests/${reqs[0]}/approvals`, { infra_body_ids: infra.slice(0, 4).map(b => b.id) });
     await call('POST', `/api/requests/${reqs[0]}/status`, { status: 'coordination' });
     await call('PUT', '/api/admin/settings', { govmap_token: 'test-token' });
-    await call('POST', '/api/tasks', { title: 'סיור שטח עם נציג התאגיד', request_id: reqs[0], assignee_id: eng.id, priority: 'גבוהה', start_date: '2026-11-12', due_date: '2026-11-20' });
+    await call('PUT', `/api/admin/infra/${infra[0].id}`, { contact_user_id: eng.id });
+    await call('POST', '/api/tasks', { title: 'סיור שטח עם נציג התאגיד', request_id: reqs[0], infra_body_id: infra[0].id, priority: 'גבוהה', start_date: '2026-11-12', due_date: '2026-11-20' });
     await ctx0.close();
 
     // ---------- מובייל + מסכים ----------
@@ -533,6 +535,40 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       const counts = await mp.$$eval('[role=tab]', t => t.map(x => x.textContent));
       rec('כל הבקשות', 'לשוניות "בקשות פתוחות" ו"בקשות שטופלו" עם מספר הבקשות בכל אחת', counts.length === 2 && /בקשות פתוחות \(\d+\)/.test(counts[0]) && /בקשות שטופלו \(\d+\)/.test(counts[1]), counts.join(' | '));
       await mp.screenshot({ path: path.join(SHOTS, 'requests-tabs.png'), fullPage: true });
+      // צפייה בקובץ בלי להוריד
+      await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('[role=tab]'); await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
+      const wtRow = await mp.evaluate(() => { const dts = [...document.querySelectorAll('.details-with-map dt')]; const i = dts.findIndex(x => x.textContent === 'זמן עבודה'); return { wt: i >= 0 ? dts[i].nextElementSibling.textContent : null, track: dts.some(x => x.textContent === 'מסלול') }; });
+      rec('זמן עבודה', 'בעמוד הבקשה מופיע "זמן עבודה" מטופס המשטרה, ואין יותר "מסלול"', wtRow.wt === 'א׳-ה׳' && !wtRow.track && !(await mp.$('.chip.fast')), JSON.stringify(wtRow));
+      await mp.click('section[aria-labelledby=docs-h] button[aria-label="צפייה בbakasha.pdf"]'); await mp.waitForSelector('dialog[open] iframe.viewer-frame');
+      const vsrc = await mp.getAttribute('dialog[open] iframe.viewer-frame', 'src');
+      const vfr = await (await mp.$('dialog[open] iframe.viewer-frame')).contentFrame(); await mp.waitForTimeout(600);
+      const vResp = await mp.evaluate(async (u) => { const r = await fetch(u); return { st: r.status, cd: r.headers.get('content-disposition'), ct: r.headers.get('content-type') }; }, vsrc);
+      rec('צפייה בקבצים', 'לחיצה על "צפייה" פותחת את הקובץ בתוך המערכת, בלי להוריד אותו', /\/view$/.test(vsrc) && vResp.st === 200 && /^inline/.test(vResp.cd) && vResp.ct === 'application/pdf' && !!vfr, JSON.stringify(vResp));
+      await mp.screenshot({ path: path.join(SHOTS, 'file-viewer.png') });
+      await mp.click('dialog[open] .dlg-foot button >> text=סגירה');
+      // משימות: אחראי = גורם תשתית ואיש הקשר שלו
+      await mp.goto(base + '/#/tasks'); await mp.click('text=משימה חדשה'); await mp.waitForSelector('dialog[open] select[name=infra_body_id]');
+      const tOpts = await mp.$$eval('dialog[open] select[name=infra_body_id] option', o => o.map(x => ({ t: x.textContent, d: x.disabled })));
+      rec('משימות', 'ברשימת האחראי מופיעים גורמי התשתית עם איש הקשר שהוגדר (גורם בלי איש קשר לא ניתן לבחירה)', tOpts.some(o => /– יוסי כהן$/.test(o.t) && !o.d) && tOpts.some(o => /לא הוגדר איש קשר/.test(o.t) && o.d), tOpts.map(o => o.t).join(' | '));
+      await mp.click('dialog[open] .dlg-foot button >> text=ביטול');
+      { const d0 = new (require('node:sqlite').DatabaseSync)(path.join(dataDir, 'app.db')); d0.prepare("UPDATE users SET must_change_pw = 0 WHERE username = 'yossi'").run(); d0.close(); }
+      const engCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const ep = await engCtx.newPage();
+      await ep.goto(base + '/'); await ep.fill('input[name=username]', 'yossi'); await ep.fill('input[name=password]', engPwOut); await ep.click('form button[type=submit]'); await ep.waitForSelector('#gsearch');
+      await ep.goto(base + '/#/tasks'); await ep.waitForSelector('.page-head');
+      rec('משימות', 'רק מנהל המערכת ורכז תיאום רואים "משימה חדשה" (מהנדס – לא)', !(await ep.$('text=משימה חדשה')) && (await ep.textContent('main')).includes('סיור שטח עם נציג התאגיד'));
+      await engCtx.close();
+      // מסך הכניסה: הכותרת והתיאור למעלה, מתחת לשם הארגון
+      const lc = await browser.newContext({ viewport: { width: 1280, height: 800 } }); const lpp = await lc.newPage(); await lpp.goto(base + '/'); await lpp.waitForSelector('.auth-art h1');
+      const pos = await lpp.evaluate(() => { const o = document.querySelector('.auth-org').getBoundingClientRect(); const t = document.querySelector('.auth-art h1').getBoundingClientRect(); return { gap: t.top - o.bottom, top: t.top }; });
+      rec('מסך כניסה', 'הכותרת והתיאור בצד מוצגים למעלה, מיד מתחת ל"מינהל הנדסה"', pos.gap >= 0 && pos.gap < 60 && pos.top < 200, JSON.stringify(pos));
+      await lpp.screenshot({ path: path.join(SHOTS, 'login-top.png') });
+      await lc.close();
+      // כל הבקשות במובייל: טקסט החיפוש לא נחתך
+      const mc = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }); const mob = await mc.newPage();
+      await login(mob); await mob.goto(base + '/#/requests?scope=all'); await mob.waitForSelector('#fq'); await mob.waitForTimeout(400);
+      const fitq = await mob.evaluate(() => { const i = document.getElementById('fq'); const cs = getComputedStyle(i); const c = document.createElement('canvas').getContext('2d'); c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`; return { ph: i.placeholder, need: c.measureText(i.placeholder).width, room: i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) }; });
+      rec('כל הבקשות', 'במכשיר נייד טקסט החיפוש מוצג עד הסוף (לא נחתך)', fitq.ph.length > 3 && fitq.need <= fitq.room, JSON.stringify(fitq));
+      await mc.close();
       // החזרה לתיקון: בחירה למי מחזירים
       await mp.goto(base + '/#/requests?scope=all'); await mp.waitForSelector('[role=tab]'); await mp.click(`text=${num}`); await mp.waitForSelector('.req-number');
       await mp.click('.req-head button >> text=החזרה לתיקון'); await mp.waitForSelector('dialog[open] [name=return_to]');
