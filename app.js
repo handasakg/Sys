@@ -30,11 +30,8 @@
     home: 'M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z',
     inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
     plus: 'M12 5v14M5 12h14',
-    folder: 'M3 6h6l2 2h10v11H3z',
     check: 'M4 12l5 5L20 6',
     file: 'M6 3h8l4 4v14H6zM14 3v4h4',
-    calendar: 'M4 5h16v16H4zM4 9h16M8 3v4M16 3v4',
-    coins: 'M4 7c0-2 16-2 16 0s-16 2-16 0zM4 7v5c0 2 16 2 16 0V7M4 12v5c0 2 16 2 16 0v-5',
     layers: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',
     users: 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21c0-4 3-6 7-6s7 2 7 6M17 11a3 3 0 1 0 0-6M22 20c0-3-2-5-4-5',
     key: 'M15 8a4 4 0 1 1-3.5 6L4 21H2v-3l7.5-7.5A4 4 0 0 1 15 8zM16 7h.01',
@@ -509,15 +506,11 @@
     { g: null, items: [['#/', 'דף הבית', 'home', null]] },
     { g: 'בקשות תיאום', items: [
       ['#/requests?scope=pending_me', 'ממתין לטיפולי', 'inbox', ['requests.view_own', 'requests.view_all', 'approvals.decide']],
-      ['#/requests?scope=mine', 'הבקשות שלי', 'file', ['requests.create', 'requests.view_own']],
-      ['#/requests?scope=all', 'כל הבקשות', 'layers', ['requests.view_all']],
-      ['#/requests/new', 'בקשה חדשה', 'plus', ['requests.create']]] },
-    { g: 'ניהול עבודה', items: [
-      ['#/projects', 'פרויקטים', 'folder', ['projects.view']],
+      ['#/requests?scope=mine', 'הבקשות שלי', 'file', ['requests.view_own']],
+      ['#/requests?scope=all', 'כל הבקשות', 'layers', ['requests.view_all']]] },
+    { g: 'ניהול עבודה', hide: 'public', items: [
       ['#/tasks', 'משימות', 'task', ['tasks.view']],
       ['#/reports', 'דוחות וגרפים', 'chart', null],
-      ['#/schedule', 'לוח זמנים', 'calendar', null],
-      ['#/budget', 'תקציב', 'coins', ['budget.view']],
       ['#/documents', 'מסמכים', 'file', null]] },
     { g: 'ניהול מערכת', items: [
       ['#/admin/users', 'משתמשים', 'users', ['admin.users']],
@@ -528,11 +521,16 @@
       ['#/admin/backups', 'גיבויים', 'db', ['admin.backup']]] },
     { g: 'אישי', items: [['#/appearance', 'עיצוב ותצוגה', 'palette', null], ['#/account', 'החשבון שלי', 'user', null]] },
   ];
+  // מגישים מהציבור (תושב/ת, יזם) ומנהל המערכת רואים תפריט מצומצם
+  const isPublicUser = () => !!(S.me && S.me.applicant_kind);
+  const isSysUser = () => !!(S.me && S.me.is_sysadmin);
+  const hiddenFor = (who) => !!who && ((who.includes('public') && isPublicUser()) || (who.includes('sys') && isSysUser()));
   let shell = null;
   function renderShell() {
     const nav = h('nav', { class: 'nav', 'aria-label': 'ניווט ראשי' });
     for (const grp of NAV) {
-      const items = grp.items.filter(([, , , perms]) => !perms || perms.some(can));
+      if (hiddenFor(grp.hide)) continue;
+      const items = grp.items.filter(([, , , perms, hide]) => (!perms || perms.some(can)) && !hiddenFor(hide));
       if (!items.length) continue;
       if (grp.g) nav.append(h('div', { class: 'nav-group', role: 'presentation' }, grp.g));
       for (const [href, label, ic] of items) nav.append(h('a', { href, 'data-href': href, title: label }, icon(ic), h('span', { class: 'lbl' }, label)));
@@ -617,9 +615,9 @@
     return { path, q: Object.fromEntries(new URLSearchParams(qs || '')) };
   }
   const ROUTES = [
-    [/^\/$/, viewDashboard], [/^\/requests$/, viewRequests], [/^\/requests\/new$/, viewRequestForm], [/^\/requests\/(\d+)$/, viewRequest],
-    [/^\/requests\/(\d+)\/edit$/, viewRequestForm], [/^\/projects$/, viewProjects], [/^\/projects\/(\d+)$/, viewProject], [/^\/tasks$/, viewTasks],
-    [/^\/schedule$/, viewSchedule], [/^\/reports$/, viewReports], [/^\/budget$/, viewBudget], [/^\/documents$/, viewDocuments], [/^\/appearance$/, viewAppearance],
+    [/^\/$/, viewDashboard], [/^\/requests$/, viewRequests], [/^\/requests\/(\d+)$/, viewRequest],
+    [/^\/requests\/(\d+)\/edit$/, viewRequestForm], [/^\/tasks$/, viewTasks],
+    [/^\/reports$/, viewReports], [/^\/documents$/, viewDocuments], [/^\/appearance$/, viewAppearance],
     [/^\/account$/, viewAccount], [/^\/admin\/users$/, viewAdminUsers], [/^\/admin\/roles$/, viewAdminRoles], [/^\/admin\/settings$/, viewAdminSettings], [/^\/admin\/types$/, viewAdminTypes],
     [/^\/admin\/audit$/, viewAdminAudit], [/^\/admin\/backups$/, viewAdminBackups],
   ];
@@ -636,6 +634,7 @@
       const active = href === full || (href !== '#/' && full.startsWith(href) && !/^#\/requests\?/.test(href)) || (href === '#/' && full === '#/');
       if (active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     }
+    if (isPublicUser() && /^\/(tasks|reports|documents)/.test(path)) { location.hash = '#/'; return; }
     const main = shell.main;
     main.replaceChildren(h('p', { class: 'muted', role: 'status' }, 'טוען…'));
     for (const [re, fn] of ROUTES) {
@@ -868,30 +867,6 @@
     return chartFrame({ ...opts, table: { head: ['גורם', ...keys.map(k => k.label), 'סה"כ'], rows: rows.map(r => [r.name, ...keys.map(k => r[k.key] || 0), keys.reduce((a, k) => a + (r[k.key] || 0), 0)]) } }, responsive(draw), legend);
   }
 
-  // ---- תקציב: מסגרת מול ביצוע (bullet) ----
-  function budgetChart(opts, rows) {
-    if (!rows || !rows.length) return emptyChart(opts, 'אין עדיין פרויקטים עם תקציב.');
-    const max = Math.max(...rows.map(r => Math.max(r.budget, r.spent))) || 1;
-    const draw = (W) => {
-      const row = 50, lw = Math.min(170, W * 0.34), H = rows.length * row + 4;
-      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': `${opts.title}: ${rows.map(r => `${r.name} נוצל ${pct(r.spent, r.budget)}%`).join(', ')}` });
-      const xr = W - lw - 8; const span = xr - 4;
-      rows.forEach((r, i) => {
-        const y = i * row + 4; const bw = r.budget / max * span; const sw = r.spent / max * span; const over = r.spent > r.budget;
-        root.append(txt(W - 2, y + 15, 'right', clip(r.name, Math.floor(lw / 7.5))));
-        root.append(svg('rect', { x: xr - bw, y: y + 4, width: bw, height: 16, rx: 4, fill: 'var(--surface-2)', stroke: 'var(--rule)' }));
-        root.append(svg('path', { class: 'mark grow h', d: hbarPath(xr, Math.max(sw, r.spent ? 3 : 0), y + 8, 8, 4), fill: over ? 'var(--st-crit)' : 'var(--s1)' }));
-        if (r.planned) { const px = xr - r.planned / max * span; root.append(svg('line', { x1: px, x2: px, y1: y + 1, y2: y + 23, stroke: 'var(--ink)', 'stroke-width': 2 })); }
-        root.append(txt(xr, y + 38, 'right', `נוצלו ${pct(r.spent, r.budget)}% · ${compactMoney(r.spent)} מתוך ${compactMoney(r.budget)}${over ? ' · חריגה' : ''}`, over ? 'v' : null));
-        root.append(svg('rect', { class: 'hit', x: 0, y, width: W, height: row - 4, tabindex: 0,
-          'data-tip': `${r.name}\nמסגרת: ${fmtMoney(r.budget)}\nבוצע: ${fmtMoney(r.spent)} (${pct(r.spent, r.budget)}%)\nמתוכנן: ${fmtMoney(r.planned)}`, 'aria-label': `${r.name}: נוצלו ${pct(r.spent, r.budget)}%` }));
-      });
-      return root;
-    };
-    const legend = legendList([{ label: 'בוצע בפועל', color: 'var(--s1)' }, { label: 'חריגה ממסגרת', color: 'var(--st-crit)' }, { label: 'מסגרת', color: 'var(--rule-strong)' }, { label: 'קו = מתוכנן', color: 'var(--ink)' }]);
-    return chartFrame({ ...opts, table: { head: ['פרויקט', 'מסגרת', 'בוצע', 'מתוכנן', 'ניצול'], rows: rows.map(r => [r.name, fmtMoney(r.budget), fmtMoney(r.spent), fmtMoney(r.planned), pct(r.spent, r.budget) + '%']) } }, responsive(draw), legend);
-  }
-
   // ---- מד עמידה ביעד (מספר מוביל + טבעת) ----
   function slaChart(opts, sla) {
     const closed = sla.onTime + sla.late;
@@ -925,7 +900,6 @@
     out.push(stackedChart({ title: 'החלטות גורמי תשתית', sub: 'כמה בקשות כל גורם אישר, אישר בתנאים, דחה או טרם השיב', wide: true, csv: { name: 'infra' } }, d.infra, [
       { key: 'approved', label: 'אישר', color: 'var(--st-good)' }, { key: 'conditions', label: 'אישר בתנאים', color: 'var(--st-warn)' },
       { key: 'pending', label: 'ממתין', color: 'var(--st-none)' }, { key: 'rejected', label: 'דחה', color: 'var(--st-crit)' }]));
-    if (d.budget) out.push(budgetChart({ title: 'ניצול תקציב לפי פרויקט', sub: 'בוצע בפועל מתוך המסגרת', wide: true, csv: { name: 'budget' } }, d.budget));
     if (d.tasks) out.push(donutChart({ title: 'משימות לפי סטטוס', csv: { name: 'tasks' } }, ['פתוחה', 'בביצוע', 'ממתינה', 'הושלמה'].map(k => ({ label: k, value: d.tasks[k] || 0 })), 'משימות'));
     return out;
   }
@@ -950,7 +924,7 @@
     const hour = new Date().getHours();
     const greet = hour < 12 ? 'בוקר טוב' : hour < 17 ? 'צהריים טובים' : 'ערב טוב';
     main.replaceChildren(
-      pageHead(`${greet}, ${S.me.full_name.split(' ')[0]}`, 'מה ממתין לך היום, ומה מתעכב.', can('requests.create') ? h('a', { class: 'btn primary', href: '#/requests/new' }, icon('plus'), 'בקשה חדשה') : null),
+      pageHead(`${greet}, ${S.me.full_name.split(' ')[0]}`, 'מה ממתין לך היום, ומה מתעכב.', null),
       h('div', { class: 'kpis' },
         kpi(k.assignedToMe + d.pendingApprovals.length, 'ממתינות לטיפולי', '#/requests?scope=pending_me'),
         kpi(k.open, 'בקשות פתוחות', can('requests.view_all') ? '#/requests?scope=all' : '#/requests?scope=mine'),
@@ -968,17 +942,12 @@
             { label: 'נושא', key: 'title' }, { label: 'סוג', render: r => T(r.type) },
             { label: 'סטטוס', render: r => h('span', null, statusChip(r.status), ' ', r.overdue ? h('span', { class: 'chip late' }, 'בחריגה') : null) },
           ], d.recent, { onRow: r => { location.hash = `#/requests/${r.id}`; }, caption: 'בקשות שעודכנו לאחרונה',
-            empty: h('div', { class: 'empty' }, h('p', null, 'עדיין אין בקשות.'), can('requests.create') ? h('a', { class: 'btn primary', href: '#/requests/new' }, 'הגשת בקשה ראשונה') : null) })),
+            empty: h('div', { class: 'empty' }, h('p', null, 'עדיין אין בקשות.'), null) })),
         h('div', null,
           d.pendingApprovals.length ? h('section', { class: 'panel' }, h('h2', null, 'ממתינות לחוות דעתך'),
             h('ul', { class: 'files' }, d.pendingApprovals.map(a => h('li', null, h('a', { class: 'fname', href: `#/requests/${a.request_id}` }, h('span', { class: 'ltr' }, a.number), ' – ', a.title))))) : null,
           d.myTasks.length ? h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', null, 'המשימות שלי'), h('div', { class: 'actions' }, h('a', { href: '#/tasks', class: 'small' }, 'לכל המשימות'))),
-            h('ul', { class: 'files' }, d.myTasks.map(t => h('li', null, h('span', { class: 'fname' }, t.title), h('span', { class: 'small muted' }, t.due_date ? 'עד ' + fmtDate(t.due_date) : ''), t.priority === 'דחופה' ? h('span', { class: 'chip late' }, 'דחופה') : null)))) : null,
-          d.projects.length ? h('section', { class: 'panel' }, h('h2', null, 'פרויקטים פעילים'),
-            h('ul', { class: 'files' }, d.projects.map(p => {
-              const pct = p.tasks_total ? Math.round(p.tasks_done / p.tasks_total * 100) : 0;
-              return h('li', null, h('a', { class: 'fname', href: `#/projects/${p.id}` }, p.name), h('div', { class: 'meter', style: { width: '120px' }, role: 'img', 'aria-label': `התקדמות ${pct}%` }, h('i', { style: { '--w': pct + '%' } })), h('span', { class: 'small num' }, pct + '%'));
-            }))) : null)));
+            h('ul', { class: 'files' }, d.myTasks.map(t => h('li', null, h('span', { class: 'fname' }, t.title), h('span', { class: 'small muted' }, t.due_date ? 'עד ' + fmtDate(t.due_date) : ''), t.priority === 'דחופה' ? h('span', { class: 'chip late' }, 'דחופה') : null)))) : null)));
   }
 
   // ---------- רשימת בקשות ----------
@@ -1000,7 +969,7 @@
       location.hash = '#/requests?' + p;
     });
     main.replaceChildren(
-      pageHead(titles[scope] || 'בקשות', `${items.length} בקשות`, can('requests.create') ? h('a', { class: 'btn primary', href: '#/requests/new' }, icon('plus'), 'בקשה חדשה') : null,
+      pageHead(titles[scope] || 'בקשות', `${items.length} בקשות`, null,
         h('button', { class: 'btn', type: 'button', onclick: () => exportCsv(items) }, icon('download'), 'ייצוא ל-Excel')),
       filters,
       tableOf([
@@ -1012,7 +981,7 @@
         { label: 'יעד', render: r => r.due_at ? h('span', { class: r.overdue ? 'sev-critical' : '' }, fmtDate(r.due_at)) : '—' },
         { label: 'סטטוס', render: r => h('span', null, statusChip(r.status), ' ', trackChip(r), r.overdue ? h('span', { class: 'chip late' }, 'בחריגה') : null) },
       ], items, { onRow: r => { location.hash = `#/requests/${r.id}`; }, caption: titles[scope],
-        empty: h('div', { class: 'empty' }, h('p', null, scope === 'pending_me' ? 'אין בקשות שממתינות לך. עבודה טובה.' : 'לא נמצאו בקשות.'), can('requests.create') && scope === 'mine' ? h('a', { class: 'btn primary', href: '#/requests/new' }, 'הגשת בקשה') : null) }));
+        empty: h('div', { class: 'empty' }, h('p', null, scope === 'pending_me' ? 'אין בקשות שממתינות לך. עבודה טובה.' : 'לא נמצאו בקשות.'), null) }));
   }
   function exportCsv(items) {
     const cols = [['number', 'מספר'], ['title', 'נושא'], ['type', 'סוג'], ['address', 'כתובת'], ['applicant_name', 'מגיש'], ['assignee_name', 'מטפל'], ['status', 'סטטוס'], ['track', 'מסלול'], ['submitted_at', 'הוגשה'], ['due_at', 'יעד']];
@@ -1025,14 +994,12 @@
 
   // ---------- טופס בקשה ----------
   async function viewRequestForm(main, q, id) {
-    let r = {};
-    if (id) r = (await api('GET', `/api/requests/${id}`)).request;
-    const projects = (await api('GET', '/api/projects/options')).items;
+    const r = (await api('GET', `/api/requests/${id}`)).request;
     const err = errBox();
     const form = h('form', { class: 'panel', novalidate: true }, err,
       h('div', { class: 'row' },
         field('סוג הבקשה', sel('type', [['', 'בחרו סוג'], ...(S.meta.typesActive || Object.keys(S.meta.types)).concat(r.type && !(S.meta.typesActive || []).includes(r.type) ? [r.type] : []).map(k => [k, T(k)])], r.type), { required: true }),
-        field('פרויקט', sel('project_id', [['', 'ללא פרויקט'], ...projects.map(p => [p.id, p.name])], r.project_id))),
+        field('פרויקט', inp('project_name', { value: r.project_name || '', maxlength: 200 }))),
       field('נושא הבקשה', inp('title', { value: r.title || '', maxlength: 200 }), { required: true }),
       field('תיאור העבודה', area('description', { value: r.description || '', maxlength: 5000 }), { hint: 'מה מתוכנן, היקף העבודה, תשתיות מושפעות.' }),
       h('div', { class: 'row' },
@@ -1042,41 +1009,26 @@
       h('div', { class: 'row' },
         field('תחילת עבודה מתוכננת', inp('planned_start', { type: 'date', value: r.planned_start || '' })),
         field('סיום עבודה מתוכנן', inp('planned_end', { type: 'date', value: r.planned_end || '' }))),
-      id ? null : h('fieldset', null, h('legend', null, 'מסלול טיפול'),
-        h('label', { class: 'check' }, h('input', { type: 'radio', name: 'track', value: 'regular', checked: true }), 'מסלול רגיל'),
-        h('label', { class: 'check' }, h('input', { type: 'radio', name: 'track', value: 'fast' }), 'בקשה למסלול מזורז (טעון אישור)'),
-        field('נימוק למסלול מזורז', area('fast_reason', { maxlength: 1000, rows: 3 }), { hint: 'חובה כשמבקשים מסלול מזורז.' })),
       h('div', { class: 'actions', style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap' } },
-        id ? h('button', { class: 'btn primary', type: 'submit', value: 'save' }, 'שמירת שינויים') : [
-          h('button', { class: 'btn primary', type: 'submit', value: 'submit' }, 'הגשת הבקשה'),
-          h('button', { class: 'btn', type: 'submit', value: 'draft' }, 'שמירה כטיוטה')],
-        h('a', { class: 'btn ghost', href: id ? `#/requests/${id}` : '#/requests?scope=mine' }, 'ביטול')));
-    const fastReason = form.querySelector('[name=fast_reason]');
-    form.addEventListener('change', () => { if (fastReason) fastReason.required = form.querySelector('[name=track]:checked')?.value === 'fast'; });
+        h('button', { class: 'btn primary', type: 'submit', value: 'save' }, 'שמירת שינויים'),
+        h('a', { class: 'btn ghost', href: `#/requests/${id}` }, 'ביטול')));
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); if (!validate(form, err)) return;
       const data = formData(form);
-      data.track = form.querySelector('[name=track]:checked')?.value || 'regular';
       if (data.planned_start && data.planned_end && data.planned_end < data.planned_start) return showErr(err, 'תאריך הסיום מוקדם מתאריך ההתחלה.');
       try {
-        if (id) { await submitting(e.submitter, () => api('PUT', `/api/requests/${id}`, data)); toast('הבקשה עודכנה'); location.hash = `#/requests/${id}`; }
-        else {
-          data.submit = e.submitter && e.submitter.value === 'submit';
-          const res = await submitting(e.submitter, () => api('POST', '/api/requests', data));
-          toast(data.submit ? `הבקשה ${res.number} הוגשה` : `הטיוטה ${res.number} נשמרה`);
-          location.hash = `#/requests/${res.id}`;
-        }
+        await submitting(e.submitter, () => api('PUT', `/api/requests/${id}`, data)); toast('הבקשה עודכנה'); location.hash = `#/requests/${id}`;
       } catch (ex) { showErr(err, ex.message); }
     });
-    main.replaceChildren(pageHead(id ? `עריכת בקשה ${r.number}` : 'בקשה חדשה לתיאום הנדסי', id ? null : 'אחרי ההגשה הבקשה תוקצה לגורם מטפל ותועבר לגורמי התשתית הרלוונטיים.'), form);
+    main.replaceChildren(pageHead(`עריכת בקשה ${r.number}`), form);
   }
 
   // ---------- תצוגת בקשה ----------
-  const ROUTE_STEPS = ['draft', 'submitted', 'review', 'coordination', 'pending_admin', 'approved'];
+  const ROUTE_STEPS = ['submitted', 'review', 'coordination', 'pending_admin', 'approved'];
   function routeLine(r) {
-    let idx = ROUTE_STEPS.indexOf(r.status);
+    let idx = Math.max(0, ROUTE_STEPS.indexOf(r.status));
     const off = ['returned', 'rejected'].includes(r.status);
-    if (r.status === 'returned') idx = 2; if (r.status === 'rejected') idx = 3;
+    if (r.status === 'returned') idx = 1; if (r.status === 'rejected') idx = 2;
     const n = ROUTE_STEPS.length;
     const wrap = h('ol', { class: 'route', 'aria-label': 'מסלול הבקשה', style: { '--n': n, '--p': Math.round(idx / (n - 1) * 88) + '%' } }, h('span', { class: 'bar', 'aria-hidden': 'true' }));
     ROUTE_STEPS.forEach((s, i) => {
@@ -1114,7 +1066,7 @@
       d.applicant && (d.applicant.phone || d.applicant.email) ? [h('dt', null, 'פרטי קשר'), h('dd', null, d.applicant.phone ? h('a', { href: 'tel:' + d.applicant.phone, class: 'ltr' }, d.applicant.phone) : null, d.applicant.phone && d.applicant.email ? ' · ' : '', d.applicant.email ? h('a', { href: 'mailto:' + d.applicant.email, class: 'ltr' }, d.applicant.email) : null)] : null,
       d.applicant && d.applicant.address ? [h('dt', null, 'כתובת מגורים'), h('dd', null, d.applicant.address)] : null,
       h('dt', null, 'גורם מטפל'), h('dd', null, r.assignee_name || 'טרם הוקצה', d.can.assign ? [' ', h('button', { class: 'btn sm', type: 'button', onclick: () => assignDialog(r, reload) }, r.assignee_name ? 'שינוי' : 'הקצאה')] : null),
-      h('dt', null, 'פרויקט'), h('dd', null, r.project_id ? h('a', { href: `#/projects/${r.project_id}` }, r.project_name) : (r.project_name || '—')),
+      h('dt', null, 'פרויקט'), h('dd', null, r.project_name || '—'),
       h('dt', null, 'משתמשים משויכים'), h('dd', null, d.members.length ? d.members.map(m => m.full_name).join(', ') : '—'),
       h('dt', null, 'כתובת העבודה'), h('dd', null, r.address || '—'),
       h('dt', null, 'גוש / חלקה'), h('dd', null, h('span', { class: 'num' }, [r.gush, r.helka].filter(Boolean).join(' / ') || '—')),
@@ -1289,130 +1241,39 @@
   async function viewDocuments(main) {
     const { items, ownOnly } = await api('GET', '/api/documents');
     let filter = '';
-    const box = h('div');
-    const draw = () => {
-      const rows = items.filter(d => !filter || d.original_name.toLowerCase().includes(filter) || (d.request_number || '').toLowerCase().includes(filter) || (d.project_name || '').toLowerCase().includes(filter));
-      box.replaceChildren(tableOf([
-        { label: 'קובץ', render: d => h('span', { class: 'fname' }, d.original_name) },
-        { label: 'שיוך', render: d => d.request_id ? h('a', { href: `#/requests/${d.request_id}`, class: 'ltr' }, d.request_number) : d.project_id ? h('a', { href: `#/projects/${d.project_id}` }, d.project_name) : '—' },
-        { label: 'גודל', render: d => h('span', { class: 'num' }, fmtSize(d.size)) }, { label: 'הועלה ע"י', key: 'uploaded_by_name' },
-        { label: 'תאריך', render: d => fmtDate(d.created_at) },
-        { label: 'פעולות', render: d => can('files.download') ? h('a', { class: 'btn sm', href: `/api/documents/${d.id}/download`, 'aria-label': `הורדת ${d.original_name}` }, icon('download'), 'הורדה') : '—' },
-      ], rows, { caption: 'מסמכים', empty: h('p', { class: 'empty' }, 'אין מסמכים להצגה. מסמכים מצורפים מתוך בקשה או פרויקט.') }));
+    const box = h('div', { class: 'doc-groups' });
+    // מיון לפי מספר בקשה (החדשה למעלה, השוואה מספרית לפי הספרות במספר), ובסוף מסמכי פרויקטים ומסמכים כלליים
+    const numKey = (n) => (String(n || '').match(/\d+/g) || []).map(x => x.padStart(10, '0')).join('-');
+    const groupsOf = (rows) => {
+      const map = new Map();
+      for (const d of rows) {
+        const key = 'r' + d.request_id;
+        if (!map.has(key)) map.set(key, { key, request_id: d.request_id, number: d.request_number, docs: [] });
+        map.get(key).docs.push(d);
+      }
+      const all = [...map.values()];
+      return all.sort((a, b) => numKey(b.number).localeCompare(numKey(a.number)) || String(b.number).localeCompare(String(a.number)));
     };
-    const search = h('input', { type: 'search', id: 'dsearch', placeholder: 'שם קובץ, מספר בקשה או פרויקט', maxlength: 100 });
+    const docRow = (d) => h('li', null,
+      h('span', { class: 'fname' }, d.original_name, d.visibility === 'restricted' ? h('span', { class: 'chip lock-chip' }, icon('lock'), 'מוגבל') : null, d.visibility === 'shared' ? h('span', { class: 'chip ok-chip' }, 'מסמך רשמי') : null),
+      h('span', { class: 'small muted' }, `${fmtSize(d.size)} · ${d.uploaded_by_name} · ${fmtDate(d.created_at)}`),
+      can('files.download') ? h('a', { class: 'btn sm', href: `/api/documents/${d.id}/download`, 'aria-label': `הורדת ${d.original_name}` }, icon('download'), 'הורדה') : null);
+    const draw = () => {
+      const rows = items.filter(d => !filter || d.original_name.toLowerCase().includes(filter) || (d.request_number || '').toLowerCase().includes(filter));
+      const groups = groupsOf(rows);
+      if (!groups.length) { box.replaceChildren(h('p', { class: 'empty' }, filter ? 'לא נמצאו מסמכים.' : 'אין מסמכים להצגה. מסמכים מצורפים מתוך עמוד הבקשה.')); return; }
+      box.replaceChildren(h('p', { class: 'small muted', role: 'status' }, `${rows.length} מסמכים ב-${groups.length} קבוצות`), ...groups.map((g, i) => {
+        const hid = 'dg-' + i;
+        const title = h('a', { href: `#/requests/${g.request_id}`, class: 'ltr dg-num' }, g.number);
+        return h('section', { class: 'panel doc-group', 'aria-labelledby': hid },
+          h('div', { class: 'panel-head' }, h('h2', { id: hid }, title), h('span', { class: 'chip plain' }, `${g.docs.length} מסמכים`)),
+          h('ul', { class: 'files' }, g.docs.map(docRow)));
+      }));
+    };
+    const search = h('input', { type: 'search', id: 'dsearch', placeholder: 'שם קובץ או מספר בקשה', maxlength: 100 });
     search.addEventListener('input', () => { filter = search.value.trim().toLowerCase(); draw(); });
     draw();
-    main.replaceChildren(pageHead('מסמכים', ownOnly ? 'המסמכים שהעלית. מנהל המערכת רואה את כל המסמכים במערכת.' : 'כל הקבצים שיש לך הרשאה לראות. הקבצים נשמרים בשרת ומגובים אוטומטית.'), h('div', { class: 'toolbar' }, h('div', { class: 'field grow' }, h('label', { for: 'dsearch' }, 'חיפוש'), search)), box);
-  }
-
-  // ---------- פרויקטים ----------
-  async function viewProjects(main) {
-    const { items } = await api('GET', '/api/projects');
-    main.replaceChildren(pageHead('פרויקטים', 'פרויקטים, התקדמות ביצוע וניצול תקציב.', can('projects.manage') ? h('button', { class: 'btn primary', type: 'button', onclick: () => projectDialog(null, () => viewProjects(main)) }, icon('plus'), 'פרויקט חדש') : null),
-      tableOf([
-        { label: 'פרויקט', render: p => h('a', { class: 'rowlink', href: `#/projects/${p.id}` }, p.name, p.code ? h('span', { class: 'small muted ltr' }, ' ' + p.code) : null) },
-        { label: 'סטטוס', render: p => h('span', { class: 'chip plain st-' + (p.status === 'הושלם' ? 'approved' : p.status === 'פעיל' ? 'review' : 'draft') }, p.status) },
-        { label: 'מנהל', render: p => p.manager_name || '—' },
-        { label: 'לו"ז', render: p => p.start_date ? `${fmtDate(p.start_date)} – ${fmtDate(p.end_date)}` : '—' },
-        { label: 'משימות', render: p => h('span', { class: 'num' }, `${p.tasks_done}/${p.tasks_total}`) },
-        { label: 'תקציב', render: p => budgetMeter(p.spent, p.budget) },
-      ], items, { onRow: p => { location.hash = `#/projects/${p.id}`; }, caption: 'פרויקטים', empty: h('p', { class: 'empty' }, 'אין פרויקטים עדיין.') }));
-  }
-  function budgetMeter(spent, budget) {
-    const pct = budget ? Math.round(spent / budget * 100) : 0;
-    return h('div', { style: { 'min-width': '150px' } }, h('div', { class: 'small num' }, `${fmtMoney(spent)} / ${fmtMoney(budget)}`),
-      h('div', { class: 'meter' + (pct > 100 ? ' over' : ''), role: 'img', 'aria-label': `ניצול תקציב ${pct}%` }, h('i', { style: { '--w': Math.min(pct, 100) + '%' } })));
-  }
-  async function projectDialog(p, done) {
-    const users = can('admin.users') || can('projects.manage') ? (await api('GET', '/api/users/lookup')).items : [];
-    p = p || {};
-    const err = errBox();
-    const form = h('form', { novalidate: true }, err,
-      field('שם הפרויקט', inp('name', { value: p.name || '', maxlength: 200 }), { required: true }),
-      h('div', { class: 'row' }, field('קוד', inp('code', { value: p.code || '', maxlength: 40, dir: 'ltr' })),
-        field('סטטוס', sel('status', ['תכנון', 'פעיל', 'מושהה', 'הושלם', 'בוטל'].map(s => [s, s]), p.status || 'פעיל'))),
-      field('מנהל פרויקט', sel('manager_id', [['', 'ללא'], ...users.map(u => [u.id, u.full_name])], p.manager_id)),
-      h('div', { class: 'row' }, field('התחלה', inp('start_date', { type: 'date', value: p.start_date || '' })), field('סיום', inp('end_date', { type: 'date', value: p.end_date || '' }))),
-      field('מסגרת תקציב (₪)', inp('budget', { type: 'number', min: 0, step: '0.01', value: p.budget ?? '', inputmode: 'decimal', disabled: !can('budget.manage') }), { hint: can('budget.manage') ? null : 'רק בעלי הרשאת תקציב יכולים לשנות.' }),
-      field('תיאור', area('description', { value: p.description || '', maxlength: 5000 })));
-    const m = modal(p.id ? 'עריכת פרויקט' : 'פרויקט חדש', form, [h('button', { class: 'btn primary', type: 'button', onclick: () => form.requestSubmit() }, 'שמירה'), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault(); if (!validate(form, err)) return;
-      try { await api(p.id ? 'PUT' : 'POST', p.id ? `/api/projects/${p.id}` : '/api/projects', formData(form)); m.close(); toast('הפרויקט נשמר'); done(); } catch (ex) { showErr(err, ex.message); }
-    });
-  }
-  async function viewProject(main, q, id) {
-    const d = await api('GET', `/api/projects/${id}`);
-    const p = d.project; const reload = () => viewProject(main, q, id);
-    const tabsDef = [['ov', 'סקירה'], ['tasks', `משימות (${d.tasks.length})`], ['req', `בקשות (${d.requests.length})`], ['docs', `מסמכים (${d.documents.length})`]];
-    if (d.budget) tabsDef.splice(2, 0, ['budget', 'תקציב']);
-    const panelBox = h('div', { role: 'tabpanel', tabindex: '0' });
-    const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'חלקי הפרויקט' });
-    const show = (key) => {
-      for (const b of tabs.children) b.setAttribute('aria-selected', String(b.dataset.k === key)), b.tabIndex = b.dataset.k === key ? 0 : -1;
-      panelBox.setAttribute('aria-labelledby', 'tab-' + key);
-      if (key === 'ov') panelBox.replaceChildren(h('div', { class: 'grid two' },
-        h('section', { class: 'panel' }, h('dl', { class: 'dl' }, h('dt', null, 'סטטוס'), h('dd', null, p.status), h('dt', null, 'מנהל'), h('dd', null, p.manager_name || '—'),
-          h('dt', null, 'לוח זמנים'), h('dd', null, p.start_date ? `${fmtDate(p.start_date)} – ${fmtDate(p.end_date)}` : '—'), h('dt', null, 'קוד'), h('dd', { class: 'ltr' }, p.code || '—')),
-          p.description ? h('p', { style: { 'margin-top': '12px', 'white-space': 'pre-wrap' } }, p.description) : null),
-        h('section', { class: 'panel' }, h('h2', null, 'מדדים'), h('p', null, 'ביצוע משימות'), h('div', { class: 'meter', role: 'img', 'aria-label': `${p.tasks_done} מתוך ${p.tasks_total} משימות` }, h('i', { style: { '--w': (p.tasks_total ? Math.round(p.tasks_done / p.tasks_total * 100) : 0) + '%' } })),
-          h('p', { class: 'small muted' }, `${p.tasks_done} מתוך ${p.tasks_total} משימות הושלמו`), d.budget ? [h('p', null, 'ניצול תקציב'), budgetMeter(p.spent, p.budget)] : null)));
-      if (key === 'tasks') panelBox.replaceChildren(tasksTable(d.tasks, reload, { project_id: id }));
-      if (key === 'budget') panelBox.replaceChildren(budgetPanel(p, d.budget, reload));
-      if (key === 'req') panelBox.replaceChildren(tableOf([{ label: 'מספר', cls: 'reqno', render: r => h('a', { class: 'rowlink ltr', href: `#/requests/${r.id}` }, r.number) }, { label: 'נושא', key: 'title' }, { label: 'סוג', render: r => T(r.type) }, { label: 'סטטוס', render: r => statusChip(r.status) }], d.requests, { caption: 'בקשות בפרויקט', empty: h('p', { class: 'empty' }, 'אין בקשות משויכות לפרויקט.') }));
-      if (key === 'docs') panelBox.replaceChildren(docsPanel(d.documents, { project_id: id }, can('files.upload'), reload));
-    };
-    for (const [k, l] of tabsDef) tabs.append(h('button', { type: 'button', role: 'tab', id: 'tab-' + k, 'data-k': k, onclick: () => show(k) }, l));
-    tabs.addEventListener('keydown', (e) => {
-      const btns = [...tabs.children]; const i = btns.indexOf(document.activeElement);
-      if (i < 0) return;
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); const n = btns[(i + (e.key === 'ArrowLeft' ? 1 : -1) + btns.length) % btns.length]; n.focus(); show(n.dataset.k); }
-    });
-    main.replaceChildren(pageHead(p.name, null,
-      can('projects.manage') ? h('button', { class: 'btn', type: 'button', onclick: () => projectDialog(p, reload) }, icon('edit'), 'עריכה') : null,
-      can('projects.manage') ? h('button', { class: 'btn danger', type: 'button', onclick: async () => {
-        if (await confirmDlg('מחיקת פרויקט', `למחוק את "${p.name}" עם המשימות, התקציב והמסמכים שלו?`, 'מחיקה', true)) { try { await api('DELETE', `/api/projects/${id}`); toast('הפרויקט נמחק'); location.hash = '#/projects'; } catch (ex) { toast(ex.message, true); } }
-      } }, icon('trash'), 'מחיקה') : null), tabs, panelBox);
-    show('ov');
-  }
-  function budgetPanel(p, entries, reload) {
-    const planned = entries.filter(e => e.kind === 'planned').reduce((a, e) => a + e.amount, 0);
-    const actual = entries.filter(e => e.kind === 'actual').reduce((a, e) => a + e.amount, 0);
-    const wrap = h('div', null, h('div', { class: 'kpis' },
-      h('div', { class: 'kpi' }, h('div', { class: 'v num' }, fmtMoney(p.budget)), h('div', { class: 'l' }, 'מסגרת')),
-      h('div', { class: 'kpi' }, h('div', { class: 'v num' }, fmtMoney(planned)), h('div', { class: 'l' }, 'מתוכנן')),
-      h('div', { class: 'kpi' + (actual > p.budget ? ' alert' : '') }, h('div', { class: 'v num' }, fmtMoney(actual)), h('div', { class: 'l' }, 'בוצע בפועל')),
-      h('div', { class: 'kpi' + (p.budget - actual < 0 ? ' alert' : '') }, h('div', { class: 'v num' }, fmtMoney(p.budget - actual)), h('div', { class: 'l' }, 'יתרה'))));
-    if (can('budget.manage')) {
-      const err = errBox();
-      const form = h('form', { class: 'panel', novalidate: true }, h('h3', null, 'הוספת שורת תקציב'), err, h('div', { class: 'row' },
-        field('סוג', sel('kind', [['actual', 'הוצאה בפועל'], ['planned', 'תכנון']], 'actual')),
-        field('תיאור', inp('description', { maxlength: 300 }), { required: true }),
-        field('סכום (₪)', inp('amount', { type: 'number', min: '0.01', step: '0.01', inputmode: 'decimal' }), { required: true }),
-        field('תאריך', inp('entry_date', { type: 'date', value: today() }), { required: true })), h('button', { class: 'btn primary', type: 'submit' }, 'הוספה'));
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault(); if (!validate(form, err)) return;
-        try { await api('POST', `/api/projects/${p.id}/budget`, formData(form)); toast('השורה נוספה'); reload(); } catch (ex) { showErr(err, ex.message); }
-      });
-      wrap.append(form);
-    }
-    wrap.append(h('div', { style: { 'margin-top': '16px' } }, tableOf([
-      { label: 'תאריך', render: e => fmtDate(e.entry_date) }, { label: 'סוג', render: e => e.kind === 'actual' ? 'בפועל' : 'תכנון' },
-      { label: 'תיאור', key: 'description' }, { label: 'סכום', render: e => h('span', { class: 'num' }, fmtMoney(e.amount)) },
-      { label: '', render: e => can('budget.manage') ? h('button', { class: 'btn sm danger', type: 'button', 'aria-label': 'מחיקת שורה ' + e.description, onclick: async () => { if (await confirmDlg('מחיקת שורה', 'למחוק את שורת התקציב?', 'מחיקה', true)) { try { await api('DELETE', `/api/budget/${e.id}`); reload(); } catch (ex) { toast(ex.message, true); } } } }, icon('trash')) : '' },
-    ], entries, { caption: 'שורות תקציב', empty: h('p', { class: 'empty' }, 'אין שורות תקציב.') })));
-    return wrap;
-  }
-  async function viewBudget(main) {
-    const { items } = await api('GET', '/api/projects');
-    const totB = items.reduce((a, p) => a + p.budget, 0); const totS = items.reduce((a, p) => a + p.spent, 0);
-    main.replaceChildren(pageHead('תקציב', 'ניצול תקציב לפי פרויקט. עדכון שורות נעשה מתוך עמוד הפרויקט.'),
-      h('div', { class: 'kpis' }, h('div', { class: 'kpi' }, h('div', { class: 'v num' }, fmtMoney(totB)), h('div', { class: 'l' }, 'סך מסגרות')),
-        h('div', { class: 'kpi' }, h('div', { class: 'v num' }, fmtMoney(totS)), h('div', { class: 'l' }, 'בוצע')),
-        h('div', { class: 'kpi' }, h('div', { class: 'v num' }, (totB ? Math.round(totS / totB * 100) : 0) + '%'), h('div', { class: 'l' }, 'ניצול כולל'))),
-      tableOf([{ label: 'פרויקט', render: p => h('a', { class: 'rowlink', href: `#/projects/${p.id}` }, p.name) }, { label: 'ניצול', render: p => budgetMeter(p.spent, p.budget) },
-        { label: 'יתרה', render: p => h('span', { class: 'num ' + (p.budget - p.spent < 0 ? 'sev-critical' : '') }, fmtMoney(p.budget - p.spent)) }], items, { caption: 'תקציב לפי פרויקט' }));
+    main.replaceChildren(pageHead('מסמכים', (ownOnly ? 'המסמכים שהעלית. ' : '') + 'מסודרים לפי מספר בקשה, מהחדשה לישנה.'), h('div', { class: 'toolbar' }, h('div', { class: 'field grow' }, h('label', { for: 'dsearch' }, 'חיפוש'), search)), box);
   }
 
   // ---------- משימות ----------
@@ -1420,7 +1281,7 @@
     const wrap = h('div');
     if (can('tasks.manage')) wrap.append(h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', type: 'button', onclick: () => taskDialog(defaults, reload) }, icon('plus'), 'משימה חדשה')));
     wrap.append(tableOf([
-      { label: 'משימה', render: t => h('span', null, t.title, t.project_name ? h('div', { class: 'small muted' }, t.project_name) : null) },
+      { label: 'משימה', render: t => h('span', null, t.title, t.request_number ? h('div', { class: 'small muted ltr' }, t.request_number) : null) },
       { label: 'אחראי', render: t => t.assignee_name || '—' },
       { label: 'עדיפות', render: t => t.priority === 'דחופה' || t.priority === 'גבוהה' ? h('span', { class: 'chip ' + (t.priority === 'דחופה' ? 'late' : 'st-coordination') }, t.priority) : t.priority },
       { label: 'יעד', render: t => { const late = t.due_date && t.due_date < today() && t.status !== 'הושלמה'; return h('span', { class: late ? 'sev-critical' : '' }, fmtDate(t.due_date), late ? ' (באיחור)' : ''); } },
@@ -1437,11 +1298,11 @@
     return wrap;
   }
   async function taskDialog(t, done) {
-    const [users, projects] = await Promise.all([api('GET', '/api/users/lookup'), api('GET', '/api/projects/options')]);
+    const users = await api('GET', '/api/users/lookup');
     const err = errBox();
     const form = h('form', { novalidate: true }, err,
       field('כותרת', inp('title', { value: t.title || '', maxlength: 200 }), { required: true }),
-      h('div', { class: 'row' }, field('פרויקט', sel('project_id', [['', 'ללא'], ...projects.items.map(p => [p.id, p.name])], t.project_id)),
+      h('div', { class: 'row' },
         field('אחראי', sel('assignee_id', [['', 'ללא'], ...users.items.map(u => [u.id, u.full_name])], t.assignee_id))),
       h('div', { class: 'row' }, field('עדיפות', sel('priority', ['נמוכה', 'רגילה', 'גבוהה', 'דחופה'].map(x => [x, x]), t.priority || 'רגילה')),
         field('סטטוס', sel('status', ['פתוחה', 'בביצוע', 'ממתינה', 'הושלמה'].map(x => [x, x]), t.status || 'פתוחה'))),
@@ -1458,31 +1319,6 @@
     const { items } = await api('GET', '/api/tasks' + (mine ? '?mine=1' : ''));
     main.replaceChildren(pageHead('משימות', can('tasks.manage') ? (mine ? 'המשימות שלי' : 'כל המשימות') : 'המשימות שהוקצו לך',
       can('tasks.manage') ? h('a', { class: 'btn', href: mine ? '#/tasks' : '#/tasks?mine=1' }, mine ? 'הצגת כל המשימות' : 'רק המשימות שלי') : null), tasksTable(items, () => viewTasks(main, q)));
-  }
-
-  // ---------- לוח זמנים ----------
-  async function viewSchedule(main) {
-    const { items } = await api('GET', '/api/schedule');
-    const valid = items.filter(i => i.start_date && i.end_date);
-    if (!valid.length) { main.replaceChildren(pageHead('לוח זמנים'), h('div', { class: 'panel empty' }, 'אין עדיין פריטים עם תאריכים. הוסיפו תאריכים לפרויקטים, משימות ובקשות.')); return; }
-    const t = (s) => new Date(s + 'T00:00:00').getTime();
-    let min = Math.min(...valid.map(i => t(i.start_date))); let max = Math.max(...valid.map(i => t(i.end_date)));
-    const d0 = new Date(min); min = new Date(d0.getFullYear(), d0.getMonth(), 1).getTime();
-    const d1 = new Date(max); max = new Date(d1.getFullYear(), d1.getMonth() + 1, 1).getTime();
-    const span = max - min; const months = [];
-    for (let d = new Date(min); d.getTime() < max; d.setMonth(d.getMonth() + 1)) months.push(d.toLocaleDateString('he-IL', { month: 'short', year: '2-digit' }));
-    const pct = (x) => ((x - min) / span * 100).toFixed(2) + '%';
-    const nowPct = Date.now() > min && Date.now() < max ? pct(Date.now()) : null;
-    const KIND = { project: 'פרויקט', task: 'משימה', request: 'בקשה' };
-    const chart = h('div', { class: 'gantt panel', 'aria-hidden': 'true' }, h('div', { class: 'gantt-inner' },
-      h('div', { class: 'g-scale' }, h('span'), h('div', { class: 'g-months' }, months.map(m => h('span', null, m)))),
-      valid.map(i => h('div', { class: 'g-row' }, h('div', { class: 'g-name' }, i.name),
-        h('div', { class: 'g-track' }, nowPct ? h('span', { class: 'g-today', style: { '--t': nowPct } }) : null,
-          h('a', { class: 'g-bar ' + i.kind, href: safeHash(i.link), tabindex: '-1', style: { '--s': pct(t(i.start_date)), '--w': ((t(i.end_date) - t(i.start_date) + 86400000) / span * 100).toFixed(2) + '%' } }, KIND[i.kind]))))));
-    main.replaceChildren(pageHead('לוח זמנים', 'פרויקטים, משימות ועבודות מתוכננות על ציר זמן. הקו האדום מסמן את היום.'), chart,
-      h('h2', { style: { 'margin-top': '20px' } }, 'הפריטים בטבלה'),
-      tableOf([{ label: 'סוג', render: i => KIND[i.kind] }, { label: 'שם', render: i => h('a', { href: safeHash(i.link) }, i.name) },
-        { label: 'התחלה', render: i => fmtDate(i.start_date) }, { label: 'סיום', render: i => fmtDate(i.end_date) }, { label: 'סטטוס', render: i => i.status || '—' }], valid, { caption: 'לוח זמנים' }));
   }
 
   // ---------- עיצוב ותצוגה ----------

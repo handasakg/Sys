@@ -219,16 +219,6 @@ legend { font-weight: 650; padding: 0 6px; }
 .meter.over > i { background: var(--bad); }
 .bars { display: flex; flex-direction: column; gap: 8px; }
 .bars .b { display: grid; grid-template-columns: 130px 1fr 36px; gap: 10px; align-items: center; font-size: .88rem; }
-.gantt { overflow-x: auto; }
-.gantt-inner { min-width: 760px; }
-.g-scale { display: grid; grid-template-columns: 220px 1fr; font-size: .78rem; color: var(--ink-2); border-bottom: 1px solid var(--rule); }
-.g-months { display: flex; } .g-months span { flex: 1; border-inline-start: 1px solid var(--rule); padding: 4px 6px; }
-.g-row { display: grid; grid-template-columns: 220px 1fr; align-items: center; min-height: 46px; border-bottom: 1px solid var(--rule); }
-.g-row .g-name { padding: 4px 8px; font-size: .88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.g-track { position: relative; height: 46px; }
-.g-bar { position: absolute; top: 8px; height: 30px; line-height: 30px; border-radius: 4px; background: var(--accent); inset-inline-start: var(--s); width: var(--w); min-width: 30px; color: var(--accent-ink); font-size: .72rem; padding: 0 6px; overflow: hidden; white-space: nowrap; text-decoration: none; }
-.g-bar.task { background: var(--info); color: #fff; } .g-bar.request { background: var(--m-telecom); color: #1a1000; }
-.g-today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--bad); inset-inline-start: var(--t); z-index: 2; }
 
 /* חלונות, התראות */
 dialog { border: 1px solid var(--rule); border-radius: var(--radius); padding: 0; background: var(--surface); color: var(--ink); width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 40px); box-shadow: 0 20px 60px rgba(0,0,0,.3); }
@@ -636,3 +626,6 @@ dialog.police-dlg { max-width: 680px; border-top: 6px solid #1B2F6B; }
 .ok-ic svg { width: 26px; height: 26px; }
 .req-head { grid-template-columns: auto minmax(min(100%, 260px), 1fr); }
 .req-head > .actions { grid-column: 1 / -1; }
+.doc-group .panel-head h2 { font-size: 1.15rem; }
+.doc-group .dg-num { font-weight: 800; letter-spacing: .03em; text-decoration: none; }
+.doc-group .dg-num:hover { text-decoration: underline; }

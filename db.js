@@ -150,6 +150,19 @@ for (const [t, c, def] of [['users', 'applicant_kind', 'TEXT'], ['users', 'addre
 }
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('approval.guidelines', ?)").run(require('./documents').DEFAULT_GUIDELINES);
 db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('public.apply', '1')").run();
+// הוסרו מהמערכת: בקשה חדשה פנימית, פרויקטים, תקציב ולוח זמנים. מנקים את ההרשאות הישנות,
+// ושם הפרויקט של בקשות ישנות נשמר כטקסט בבקשה. הטבלאות הישנות נשארות בלי שימוש כדי שלא יימחקו נתונים.
+{
+  const { KEYS } = require('./permissions');
+  const clean = (json) => { const a = JSON.parse(json || '[]'); const b = a.filter(k => KEYS.has(k)); return b.length === a.length ? null : JSON.stringify(b); };
+  for (const r of db.prepare('SELECT id, perms FROM roles').all()) { const c = clean(r.perms); if (c) db.prepare('UPDATE roles SET perms = ? WHERE id = ?').run(c, r.id); }
+  for (const u of db.prepare('SELECT id, perm_grant, perm_deny FROM users').all()) {
+    const g = clean(u.perm_grant); const d = clean(u.perm_deny);
+    if (g) db.prepare('UPDATE users SET perm_grant = ? WHERE id = ?').run(g, u.id);
+    if (d) db.prepare('UPDATE users SET perm_deny = ? WHERE id = ?').run(d, u.id);
+  }
+  db.exec("UPDATE requests SET project_name = (SELECT name FROM projects p WHERE p.id = requests.project_id) WHERE project_id IS NOT NULL AND (project_name IS NULL OR project_name = '')");
+}
 for (const [k, val] of Object.entries({ 'requests.prefix': 'TH', 'requests.with_year': '1', 'requests.pad': '4' })) db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, val);
 
 function tx(fn) {

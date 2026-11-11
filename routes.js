@@ -55,7 +55,7 @@ function publicUser(u) {
   return { id: u.id, username: u.username, full_name: u.full_name, email: u.email, phone: u.phone, department: u.department,
     role_id: u.role_id, infra_body_id: u.infra_body_id, active: !!u.active, must_change_pw: !!u.must_change_pw,
     locked: !!(u.locked_until && u.locked_until > Date.now()), last_login: u.last_login, created_at: u.created_at,
-    perm_grant: JSON.parse(u.perm_grant || '[]'), perm_deny: JSON.parse(u.perm_deny || '[]') };
+    perm_grant: JSON.parse(u.perm_grant || '[]'), perm_deny: JSON.parse(u.perm_deny || '[]'), applicant_kind: u.applicant_kind || null };
 }
 function notify(userId, text, link) {
   if (!userId) return;
@@ -248,7 +248,7 @@ function requestFields(b) {
     address: v.str(b.address, { max: 300, name: 'כתובת' }),
     gush: v.str(b.gush, { max: 20, name: 'גוש', pattern: /^[\d\s-]*$/ }),
     helka: v.str(b.helka, { max: 20, name: 'חלקה', pattern: /^[\d\s-]*$/ }),
-    project_id: v.id(b.project_id, { name: 'פרויקט' }),
+    project_name: v.str(b.project_name, { max: 200, name: 'פרויקט' }),
     planned_start: v.date(b.planned_start, { name: 'תאריך התחלה' }),
     planned_end: v.date(b.planned_end, { name: 'תאריך סיום' }),
   };
@@ -277,10 +277,10 @@ function decorate(r) {
   const overdue = r.due_at && W.OPEN_STATUSES.includes(r.status) && r.due_at < nowIso();
   return { ...r, overdue: !!overdue };
 }
-const REQ_SELECT = `SELECT r.*, a.full_name AS applicant_name, s.full_name AS assignee_name, COALESCE(p.name, r.project_name) AS project_name,
+const REQ_SELECT = `SELECT r.*, a.full_name AS applicant_name, s.full_name AS assignee_name, r.project_name,
   (SELECT COUNT(*) FROM request_approvals x WHERE x.request_id = r.id) AS approvals_total,
   (SELECT COUNT(*) FROM request_approvals x WHERE x.request_id = r.id AND x.decision = 'approved') AS approvals_done
-  FROM requests r JOIN users a ON a.id = r.applicant_id LEFT JOIN users s ON s.id = r.assignee_id LEFT JOIN projects p ON p.id = r.project_id`;
+  FROM requests r JOIN users a ON a.id = r.applicant_id LEFT JOIN users s ON s.id = r.assignee_id`;
 
 route('GET', '/api/requests', (req) => {
   requirePerm(req, 'requests.view_own', 'requests.view_all', 'approvals.decide');
@@ -299,7 +299,6 @@ route('GET', '/api/requests', (req) => {
   if (q.status && W.STATUSES[q.status]) { where.push('r.status = ?'); params.push(q.status); }
   if (q.type && typesMap()[q.type]) { where.push('r.type = ?'); params.push(q.type); }
   if (q.track && W.TRACKS[q.track]) { where.push('r.track = ?'); params.push(q.track); }
-  if (q.project_id) { where.push('r.project_id = ?'); params.push(v.id(q.project_id)); }
   if (q.q) {
     const term = '%' + v.str(q.q, { max: 100 }).replace(/[%_\\]/g, '\\$&') + '%';
     where.push(`(r.title LIKE ? ESCAPE '\\' OR r.number LIKE ? ESCAPE '\\' OR r.address LIKE ? ESCAPE '\\')`); params.push(term, term, term);
@@ -307,31 +306,6 @@ route('GET', '/api/requests', (req) => {
   const rows = db.prepare(`${REQ_SELECT} ${where.length ? 'WHERE ' + where.map(w => `(${w})`).join(' AND ') : ''} ORDER BY r.updated_at DESC LIMIT 500`).all(...params);
   // סינון נוסף לביטחון: רק מה שמותר לראות
   return { items: rows.filter(r => canViewRequest(req, r)).map(decorate), scope };
-});
-
-route('POST', '/api/requests', (req) => {
-  requirePerm(req, 'requests.create');
-  const f = requestFields(req.body);
-  if (f.project_id && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(f.project_id)) throw new sec.ValidationError('פרויקט לא קיים');
-  if (f.planned_start && f.planned_end && f.planned_end < f.planned_start) throw new sec.ValidationError('תאריך סיום לפני תאריך התחלה');
-  const wantFast = req.body.track === 'fast';
-  const submit = req.body.submit === true;
-  const fastReason = v.str(req.body.fast_reason, { max: 1000, name: 'נימוק למסלול מזורז', required: wantFast });
-  const r = tx(() => {
-    const number = nextRequestNumber();
-    const info = db.prepare(`INSERT INTO requests (number, type, title, description, address, gush, helka, project_id, applicant_id, status, track, track_status,
-      planned_start, planned_end, submitted_at, due_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(number, f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_id, req.user.id, submit ? 'submitted' : 'draft',
-        wantFast ? 'fast' : 'regular', wantFast ? 'pending' : 'none', f.planned_start, f.planned_end,
-        submit ? nowIso() : null, submit ? addDays(slaDays('regular', 'none')) : null);
-    const id = Number(info.lastInsertRowid);
-    history(id, req.user.id, 'נוצרה', submit ? 'הבקשה הוגשה' : 'נשמרה כטיוטה');
-    if (wantFast) { history(id, req.user.id, 'בקשה למסלול מזורז', fastReason); notifyPerm('requests.approve_track', `בקשה ${number} ממתינה לאישור מסלול מזורז`, `#/requests/${id}`, req.user.id); }
-    if (submit) notifyPerm('requests.assign', `בקשה חדשה הוגשה: ${number} – ${f.title}`, `#/requests/${id}`, req.user.id);
-    return { id, number };
-  });
-  audit(req, 'request_created', r);
-  return status(201, r);
 });
 
 route('GET', '/api/requests/:id', (req) => {
@@ -363,9 +337,9 @@ route('PUT', '/api/requests/:id', (req) => {
   const r = loadRequest(req.params.id); assertView(req, r);
   if (!canEditRequest(req, r)) throw new HttpError(403, 'אין הרשאה לערוך בקשה זו');
   const f = requestFields({ ...r, ...req.body, __currentType: r.type });
-  if (f.project_id && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(f.project_id)) throw new sec.ValidationError('פרויקט לא קיים');
-  db.prepare(`UPDATE requests SET type=?, title=?, description=?, address=?, gush=?, helka=?, project_id=?, planned_start=?, planned_end=?, updated_at=? WHERE id=?`)
-    .run(f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_id, f.planned_start, f.planned_end, nowIso(), r.id);
+  if (f.planned_start && f.planned_end && f.planned_end < f.planned_start) throw new sec.ValidationError('תאריך סיום לפני תאריך התחלה');
+  db.prepare(`UPDATE requests SET type=?, title=?, description=?, address=?, gush=?, helka=?, project_name=?, planned_start=?, planned_end=?, updated_at=? WHERE id=?`)
+    .run(f.type, f.title, f.description, f.address, f.gush, f.helka, f.project_name, f.planned_start, f.planned_end, nowIso(), r.id);
   history(r.id, req.user.id, 'עודכנה', null);
   audit(req, 'request_updated', { id: r.id });
   return { ok: true };
@@ -569,10 +543,9 @@ route('POST', '/api/requests/:id/comment', (req) => {
 });
 
 // ---------------- מסמכים ----------------
-function assertDocTarget(req, requestId, projectId) {
+function assertDocTarget(req, requestId) {
   if (requestId) { const r = loadRequest(requestId); assertView(req, r); return; }
-  if (projectId) { requirePerm(req, 'projects.view'); if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new HttpError(404, 'פרויקט לא נמצא'); return; }
-  throw new sec.ValidationError('יש לשייך את הקובץ לבקשה או לפרויקט');
+  throw new sec.ValidationError('יש לשייך את הקובץ לבקשה');
 }
 route('POST', '/api/documents', async (req) => {
   requirePerm(req, 'files.upload');
@@ -584,11 +557,11 @@ route('POST', '/api/documents', async (req) => {
   try {
     try { await cloud.putFile('uploads/' + f.stored, fs.readFileSync(up.storedPath(f.stored)), f.mime); }
     catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); throw new HttpError(503, 'שמירת הקובץ בענן נכשלה. נסו שוב בעוד רגע.'); }
-    const requestId = v.id(f.fields.request_id); const projectId = v.id(f.fields.project_id);
-    assertDocTarget(req, requestId, projectId);
+    const requestId = v.id(f.fields.request_id);
+    assertDocTarget(req, requestId);
     const category = v.str(f.fields.category, { max: 60, name: 'קטגוריה' });
-    const info = db.prepare('INSERT INTO documents (request_id, project_id, category, original_name, stored_name, mime, size, sha256, uploaded_by) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(requestId, projectId, category, f.original, f.stored, f.mime, f.size, f.sha256, req.user.id);
+    const info = db.prepare('INSERT INTO documents (request_id, category, original_name, stored_name, mime, size, sha256, uploaded_by) VALUES (?,?,?,?,?,?,?,?)')
+      .run(requestId, category, f.original, f.stored, f.mime, f.size, f.sha256, req.user.id);
     if (requestId) history(requestId, req.user.id, 'הועלה מסמך', f.original);
     audit(req, 'file_uploaded', { id: Number(info.lastInsertRowid), name: f.original, size: f.size });
     return status(201, { id: Number(info.lastInsertRowid) });
@@ -604,7 +577,7 @@ function canSeeDoc(req, d) {
   if (d.visibility === 'shared' && d.request_id) { const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(d.request_id); return !!r && canViewRequest(req, r); } // מסמך האישור
   if (docsOwnOnly()) return d.uploaded_by === req.user.id;
   if (d.request_id) { const r = db.prepare('SELECT * FROM requests WHERE id = ?').get(d.request_id); return !!r && canViewRequest(req, r); }
-  return can(req, 'projects.view');
+  return false;
 }
 function loadDoc(req) {
   const d = db.prepare('SELECT * FROM documents WHERE id = ?').get(req.params.id);
@@ -613,9 +586,9 @@ function loadDoc(req) {
 }
 route('GET', '/api/documents', (req) => {
   requireAuth(req);
-  const rows = db.prepare(`SELECT d.id, d.request_id, d.project_id, d.category, d.visibility, d.original_name, d.size, d.mime, d.created_at, d.uploaded_by,
-    u.full_name AS uploaded_by_name, r.number AS request_number, p.name AS project_name
-    FROM documents d JOIN users u ON u.id = d.uploaded_by LEFT JOIN requests r ON r.id = d.request_id LEFT JOIN projects p ON p.id = d.project_id ORDER BY d.id DESC LIMIT 1000`).all();
+  const rows = db.prepare(`SELECT d.id, d.request_id, d.category, d.visibility, d.original_name, d.size, d.mime, d.created_at, d.uploaded_by,
+    u.full_name AS uploaded_by_name, r.number AS request_number
+    FROM documents d JOIN users u ON u.id = d.uploaded_by JOIN requests r ON r.id = d.request_id ORDER BY d.id DESC LIMIT 1000`).all();
   return { items: rows.filter(d => canSeeDoc(req, d)), ownOnly: docsOwnOnly() && !isSysAdmin(req) && !can(req, 'requests.mapping') };
 });
 route('GET', '/api/documents/:id/download', async (req, res) => {
@@ -644,86 +617,6 @@ route('DELETE', '/api/documents/:id', (req) => {
   return { ok: true };
 });
 
-// ---------------- פרויקטים, תקציב ----------------
-function projectFields(b) {
-  return {
-    code: v.str(b.code, { max: 40, name: 'קוד פרויקט' }),
-    name: v.str(b.name, { max: 200, required: true, name: 'שם פרויקט' }),
-    description: v.str(b.description, { max: 5000, name: 'תיאור' }),
-    status: v.oneOf(b.status || 'פעיל', ['תכנון', 'פעיל', 'מושהה', 'הושלם', 'בוטל'], { required: true, name: 'סטטוס' }),
-    manager_id: v.id(b.manager_id, { name: 'מנהל פרויקט' }),
-    start_date: v.date(b.start_date, { name: 'תאריך התחלה' }),
-    end_date: v.date(b.end_date, { name: 'תאריך סיום' }),
-    budget: v.num(b.budget ?? 0, { min: 0, max: 1e10, name: 'תקציב' }) || 0,
-  };
-}
-const PROJ_SELECT = `SELECT p.*, u.full_name AS manager_name,
-  (SELECT COALESCE(SUM(amount),0) FROM budget_entries b WHERE b.project_id = p.id AND kind = 'actual') AS spent,
-  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS tasks_total,
-  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'הושלמה') AS tasks_done,
-  (SELECT COUNT(*) FROM requests r WHERE r.project_id = p.id) AS requests_total
-  FROM projects p LEFT JOIN users u ON u.id = p.manager_id`;
-route('GET', '/api/projects', (req) => { requirePerm(req, 'projects.view'); return { items: db.prepare(`${PROJ_SELECT} ORDER BY p.id DESC`).all() }; });
-route('GET', '/api/projects/options', (req) => { requireAuth(req); return { items: db.prepare("SELECT id, name, code FROM projects WHERE status NOT IN ('בוטל') ORDER BY name").all() }; });
-route('POST', '/api/projects', (req) => {
-  requirePerm(req, 'projects.manage');
-  const f = projectFields(req.body);
-  if (f.start_date && f.end_date && f.end_date < f.start_date) throw new sec.ValidationError('תאריך סיום לפני תאריך התחלה');
-  const info = db.prepare('INSERT INTO projects (code, name, description, status, manager_id, start_date, end_date, budget, created_by) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(f.code, f.name, f.description, f.status, f.manager_id, f.start_date, f.end_date, f.budget, req.user.id);
-  audit(req, 'project_created', { id: Number(info.lastInsertRowid) });
-  return status(201, { id: Number(info.lastInsertRowid) });
-});
-route('GET', '/api/projects/:id', (req) => {
-  requirePerm(req, 'projects.view');
-  const p = db.prepare(`${PROJ_SELECT} WHERE p.id = ?`).get(req.params.id);
-  if (!p) throw new HttpError(404, 'פרויקט לא נמצא');
-  const tasks = can(req, 'tasks.view') ? db.prepare('SELECT t.*, u.full_name AS assignee_name FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id = ? ORDER BY t.due_date IS NULL, t.due_date').all(p.id) : [];
-  const budget = can(req, 'budget.view') ? db.prepare('SELECT * FROM budget_entries WHERE project_id = ? ORDER BY entry_date DESC, id DESC').all(p.id) : null;
-  const requests = db.prepare(`${REQ_SELECT} WHERE r.project_id = ? ORDER BY r.id DESC`).all(p.id).filter(r => canViewRequest(req, r)).map(decorate);
-  const docs = db.prepare('SELECT d.id, d.request_id, d.project_id, d.visibility, d.original_name, d.size, d.category, d.created_at, d.uploaded_by, u.full_name AS uploaded_by_name FROM documents d JOIN users u ON u.id = d.uploaded_by WHERE d.project_id = ? ORDER BY d.id DESC').all(p.id).filter(d => canSeeDoc(req, d));
-  return { project: p, tasks, budget, requests, documents: docs };
-});
-route('PUT', '/api/projects/:id', (req) => {
-  requirePerm(req, 'projects.manage');
-  const cur = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
-  if (!cur) throw new HttpError(404, 'פרויקט לא נמצא');
-  const f = projectFields({ ...cur, ...req.body });
-  if (!can(req, 'budget.manage')) f.budget = cur.budget; // שינוי מסגרת תקציב רק למורשי תקציב
-  db.prepare('UPDATE projects SET code=?, name=?, description=?, status=?, manager_id=?, start_date=?, end_date=?, budget=? WHERE id=?')
-    .run(f.code, f.name, f.description, f.status, f.manager_id, f.start_date, f.end_date, f.budget, cur.id);
-  audit(req, 'project_updated', { id: cur.id });
-  return { ok: true };
-});
-route('DELETE', '/api/projects/:id', (req) => {
-  requirePerm(req, 'projects.manage');
-  const files = db.prepare('SELECT stored_name FROM documents WHERE project_id = ?').all(req.params.id);
-  const info = db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
-  if (!info.changes) throw new HttpError(404, 'פרויקט לא נמצא');
-  for (const f of files) fs.rm(up.storedPath(f.stored_name), { force: true }, () => {});
-  cloud.deleteFiles(files.map(f => 'uploads/' + f.stored_name));
-  audit(req, 'project_deleted', { id: req.params.id }, 'warning');
-  return { ok: true };
-});
-route('POST', '/api/projects/:id/budget', (req) => {
-  requirePerm(req, 'budget.manage');
-  if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(req.params.id)) throw new HttpError(404, 'פרויקט לא נמצא');
-  const kind = v.oneOf(req.body.kind, ['planned', 'actual'], { required: true, name: 'סוג' });
-  const description = v.str(req.body.description, { max: 300, required: true, name: 'תיאור' });
-  const amount = v.num(req.body.amount, { min: 0.01, max: 1e9, required: true, name: 'סכום' }); // סכום מאומת בשרת בלבד
-  const entry_date = v.date(req.body.entry_date, { required: true, name: 'תאריך' });
-  const info = db.prepare('INSERT INTO budget_entries (project_id, kind, description, amount, entry_date, created_by) VALUES (?,?,?,?,?,?)').run(req.params.id, kind, description, amount, entry_date, req.user.id);
-  audit(req, 'budget_entry_added', { project: req.params.id, amount, kind });
-  return status(201, { id: Number(info.lastInsertRowid) });
-});
-route('DELETE', '/api/budget/:id', (req) => {
-  requirePerm(req, 'budget.manage');
-  const info = db.prepare('DELETE FROM budget_entries WHERE id = ?').run(req.params.id);
-  if (!info.changes) throw new HttpError(404, 'לא נמצא');
-  audit(req, 'budget_entry_deleted', { id: req.params.id }, 'warning');
-  return { ok: true };
-});
-
 // ---------------- משימות ----------------
 const TASK_STATUS = ['פתוחה', 'בביצוע', 'ממתינה', 'הושלמה'];
 const TASK_PRIORITY = ['נמוכה', 'רגילה', 'גבוהה', 'דחופה'];
@@ -731,7 +624,7 @@ function taskFields(b) {
   return {
     title: v.str(b.title, { max: 200, required: true, name: 'כותרת' }),
     description: v.str(b.description, { max: 3000, name: 'תיאור' }),
-    project_id: v.id(b.project_id, { name: 'פרויקט' }), request_id: v.id(b.request_id, { name: 'בקשה' }),
+    request_id: v.id(b.request_id, { name: 'בקשה' }),
     assignee_id: v.id(b.assignee_id, { name: 'אחראי' }),
     status: v.oneOf(b.status || 'פתוחה', TASK_STATUS, { required: true, name: 'סטטוס' }),
     priority: v.oneOf(b.priority || 'רגילה', TASK_PRIORITY, { required: true, name: 'עדיפות' }),
@@ -741,16 +634,16 @@ function taskFields(b) {
 route('GET', '/api/tasks', (req) => {
   requirePerm(req, 'tasks.view');
   const mine = req.query.mine === '1' || !can(req, 'tasks.manage');
-  const rows = db.prepare(`SELECT t.*, u.full_name AS assignee_name, p.name AS project_name, r.number AS request_number FROM tasks t
-    LEFT JOIN users u ON u.id = t.assignee_id LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN requests r ON r.id = t.request_id
+  const rows = db.prepare(`SELECT t.*, u.full_name AS assignee_name, r.number AS request_number FROM tasks t
+    LEFT JOIN users u ON u.id = t.assignee_id LEFT JOIN requests r ON r.id = t.request_id
     ${mine ? 'WHERE t.assignee_id = ? OR t.created_by = ?' : ''} ORDER BY t.status = 'הושלמה', t.due_date IS NULL, t.due_date LIMIT 1000`).all(...(mine ? [req.user.id, req.user.id] : []));
   return { items: rows };
 });
 route('POST', '/api/tasks', (req) => {
   requirePerm(req, 'tasks.manage');
   const f = taskFields(req.body);
-  const info = db.prepare('INSERT INTO tasks (project_id, request_id, title, description, assignee_id, status, priority, start_date, due_date, created_by) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .run(f.project_id, f.request_id, f.title, f.description, f.assignee_id, f.status, f.priority, f.start_date, f.due_date, req.user.id);
+  const info = db.prepare('INSERT INTO tasks (request_id, title, description, assignee_id, status, priority, start_date, due_date, created_by) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(f.request_id, f.title, f.description, f.assignee_id, f.status, f.priority, f.start_date, f.due_date, req.user.id);
   if (f.assignee_id && f.assignee_id !== req.user.id) notify(f.assignee_id, `משימה חדשה: ${f.title}`, '#/tasks');
   audit(req, 'task_created', { id: Number(info.lastInsertRowid) });
   return status(201, { id: Number(info.lastInsertRowid) });
@@ -767,8 +660,8 @@ route('PUT', '/api/tasks/:id', (req) => {
     return { ok: true };
   }
   const f = taskFields({ ...t, ...req.body });
-  db.prepare('UPDATE tasks SET project_id=?, request_id=?, title=?, description=?, assignee_id=?, status=?, priority=?, start_date=?, due_date=? WHERE id=?')
-    .run(f.project_id, f.request_id, f.title, f.description, f.assignee_id, f.status, f.priority, f.start_date, f.due_date, t.id);
+  db.prepare('UPDATE tasks SET project_id=NULL, request_id=?, title=?, description=?, assignee_id=?, status=?, priority=?, start_date=?, due_date=? WHERE id=?')
+    .run(f.request_id, f.title, f.description, f.assignee_id, f.status, f.priority, f.start_date, f.due_date, t.id);
   return { ok: true };
 });
 route('DELETE', '/api/tasks/:id', (req) => {
@@ -776,18 +669,6 @@ route('DELETE', '/api/tasks/:id', (req) => {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
   audit(req, 'task_deleted', { id: req.params.id });
   return { ok: true };
-});
-
-// ---------------- לוח זמנים ----------------
-route('GET', '/api/schedule', (req) => {
-  requireAuth(req);
-  const items = [];
-  if (can(req, 'projects.view')) for (const p of db.prepare("SELECT id, name, start_date, end_date, status FROM projects WHERE start_date IS NOT NULL AND end_date IS NOT NULL").all()) items.push({ kind: 'project', ...p, link: `#/projects/${p.id}` });
-  if (can(req, 'tasks.view')) for (const t of db.prepare("SELECT id, title AS name, COALESCE(start_date, due_date) AS start_date, due_date AS end_date, status, priority FROM tasks WHERE due_date IS NOT NULL").all()) items.push({ kind: 'task', ...t, link: '#/tasks' });
-  for (const r of db.prepare("SELECT * FROM requests WHERE planned_start IS NOT NULL AND planned_end IS NOT NULL").all()) {
-    if (canViewRequest(req, r)) items.push({ kind: 'request', id: r.id, name: `${r.number} ${r.title}`, start_date: r.planned_start, end_date: r.planned_end, status: W.STATUSES[r.status], link: `#/requests/${r.id}` });
-  }
-  return { items };
 });
 
 // ---------------- לוח מחוונים, התראות, חיפוש משתמשים ----------------
@@ -801,17 +682,16 @@ route('GET', '/api/dashboard', (req) => {
   const pendingApprovals = u.infra_body_id ? db.prepare(`SELECT ra.id, r.id AS request_id, r.number, r.title FROM request_approvals ra JOIN requests r ON r.id = ra.request_id
     WHERE ra.infra_body_id = ? AND ra.decision = 'pending' AND r.status IN ('review','coordination') ORDER BY r.due_at`).all(u.infra_body_id) : [];
   const myTasks = can(req, 'tasks.view') ? db.prepare(`SELECT id, title, due_date, priority, status FROM tasks WHERE assignee_id = ? AND status != 'הושלמה' ORDER BY due_date IS NULL, due_date LIMIT 8`).all(u.id) : [];
-  const projects = can(req, 'projects.view') ? db.prepare(`${PROJ_SELECT} WHERE p.status IN ('פעיל','תכנון') ORDER BY p.end_date IS NULL, p.end_date LIMIT 6`).all() : [];
   return {
     kpi: { open: open.length, overdue: open.filter(r => r.overdue).length, fast: open.filter(r => r.track === 'fast' && r.track_status === 'approved').length,
       trackPending: visible.filter(r => r.track_status === 'pending').length, approved: byStatus.approved || 0,
       myOpen: open.filter(r => r.applicant_id === u.id).length, assignedToMe: open.filter(r => r.assignee_id === u.id).length },
-    byStatus, byType, pendingApprovals, myTasks, projects,
+    byStatus, byType, pendingApprovals, myTasks,
     recent: visible.sort((a, b) => (b.updated_at > a.updated_at ? 1 : -1)).slice(0, 8),
   };
 });
 // ---------------- דוחות וגרפים ----------------
-// כל הנתונים מסוננים לפי מה שהמשתמש רשאי לראות; תקציב ומשימות רק עם ההרשאות שלהם.
+// כל הנתונים מסוננים לפי מה שהמשתמש רשאי לראות; משימות רק עם ההרשאה שלהן.
 route('GET', '/api/reports', (req) => {
   requireAuth(req);
   const months = [3, 6, 12, 24].includes(Number(req.query.months)) ? Number(req.query.months) : 12;
@@ -846,10 +726,6 @@ route('GET', '/api/reports', (req) => {
     for (const x of rows) { map[x.name] = map[x.name] || { name: x.name, pending: 0, approved: 0, conditions: 0, rejected: 0 }; map[x.name][x.decision] = x.c; }
     infra.push(...Object.values(map).sort((a, b) => (b.pending + b.approved + b.conditions + b.rejected) - (a.pending + a.approved + a.conditions + a.rejected)));
   }
-  const budget = can(req, 'budget.view') ? db.prepare(`SELECT p.id, p.name, p.budget,
-      (SELECT COALESCE(SUM(amount),0) FROM budget_entries b WHERE b.project_id = p.id AND kind = 'actual') AS spent,
-      (SELECT COALESCE(SUM(amount),0) FROM budget_entries b WHERE b.project_id = p.id AND kind = 'planned') AS planned
-      FROM projects p WHERE p.status != 'בוטל' ORDER BY p.budget DESC LIMIT 12`).all() : null;
   let tasks = null;
   if (can(req, 'tasks.view')) {
     const rows = can(req, 'tasks.manage')
@@ -862,7 +738,7 @@ route('GET', '/api/reports', (req) => {
     trend: { labels: keys, submitted: keys.map(k => submitted[k]), approved: keys.map(k => approved[k]) },
     byStatus, byType,
     sla: { onTime, late, openOverdue: openNow.filter(r => r.overdue).length, open: openNow.length, avgDays: daysN ? Math.round(daysSum / daysN * 10) / 10 : null },
-    infra, budget, tasks,
+    infra, tasks,
   };
 });
 
@@ -876,7 +752,7 @@ route('POST', '/api/notifications/read', (req) => {
   return { ok: true };
 });
 route('GET', '/api/users/lookup', (req) => {
-  requirePerm(req, 'requests.assign', 'tasks.manage', 'projects.manage', 'admin.users');
+  requirePerm(req, 'requests.assign', 'tasks.manage', 'admin.users', 'admin.settings');
   return { items: db.prepare('SELECT u.id, u.full_name, u.department, u.infra_body_id, r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.active = 1 ORDER BY u.full_name').all() };
 });
 route('GET', '/api/infra', (req) => { requireAuth(req); return { items: db.prepare('SELECT id, name, contact, active FROM infra_bodies ORDER BY name').all() }; });
@@ -1242,7 +1118,7 @@ route('GET', '/api/public/apply-meta', () => {
 
 route('POST', '/api/public/apply', async (req, res) => {
   if (getSetting('public.apply') === '0') return status(403, { error: 'הגשת בקשות מהאתר סגורה כרגע' });
-  if (req.user) return status(400, { error: 'כבר מחוברים למערכת. להגשת בקשה נוספת השתמשו ב"בקשה חדשה".' });
+  if (req.user) return status(400, { error: 'כבר מחוברים למערכת. להגשת בקשה נוספת התנתקו ולחצו "הגשת בקשה" במסך הכניסה.' });
   const ip = sec.clientIp(req);
   const rl = sec.rateLimit('apply:' + ip, 5, 60 * 60000, { persist: true });
   if (!rl.ok) { audit(req, 'apply_rate_limited', {}, 'warning'); res.setHeader('Retry-After', rl.retryAfter); return status(429, { error: 'הוגשו יותר מדי בקשות מהמחשב הזה. נסו שוב בעוד שעה.' }); }

@@ -27,24 +27,27 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     const call = async (m, u, d) => { const r = await api.fetch(base + u, { method: m, headers: { 'X-Requested-With': 'fetch', 'X-CSRF-Token': csrf }, data: d }); return r.json(); };
     const roles = (await call('GET', '/api/admin/roles')).items; const rid = n => roles.find(r => r.name === n).id;
     const engPw = pw(); const eng = await call('POST', '/api/admin/users', { username: 'yossi', full_name: 'יוסי כהן', role_id: rid('מהנדס / מאשר'), password: engPw, department: 'מינהל הנדסה', no_infra: true, no_request: true });
-    const p1 = await call('POST', '/api/projects', { name: 'שדרוג קווי מים – שכונת הפרחים', code: 'P-2026-14', status: 'פעיל', manager_id: eng.id, start_date: '2026-09-01', end_date: '2027-03-31', budget: 2400000 });
-    await call('POST', '/api/projects', { name: 'ריצוף מדרכות רחוב הרצל', code: 'P-2026-21', status: 'תכנון', start_date: '2026-12-01', end_date: '2027-06-30', budget: 850000 });
-    await call('POST', `/api/projects/${p1.id}/budget`, { kind: 'actual', description: 'חשבון ביניים קבלן 1', amount: 640000, entry_date: '2026-10-15' });
     const reqs = [];
     for (const [type, title, addr] of [['planning', 'תיאום תכנון להנחת קו מים 8"', 'רחוב הורדים 12'], ['execution', 'אישור חפירה להעתקת כבל חשמל', 'שדרות ירושלים 40'], ['completion', 'אישור גמר עבודה – תשתית תקשורת', 'רחוב הגפן 3'], ['execution', '<img src=x onerror=alert(1)> בדיקת XSS', '"><script>alert(2)</script>']]) {
-      const r = await call('POST', '/api/requests', { type, title, address: addr, project_id: p1.id, planned_start: '2026-11-15', planned_end: '2027-01-20', description: 'פירוט העבודה המתוכננת לצורך בדיקה.', submit: true, track: type === 'execution' ? 'fast' : 'regular', fast_reason: 'עבודת חירום' });
-      reqs.push(r.id);
+      // בקשות נפתחות רק מהגשה באתר; לנתוני ההדגמה יוצרים אותן ישירות במסד
+      const sdb = new (require('node:sqlite').DatabaseSync)(path.join(dataDir, 'app.db'));
+      const chiefId = sdb.prepare("SELECT id FROM users WHERE username = 'chief'").get().id;
+      const info = sdb.prepare(`INSERT INTO requests (number, type, title, description, address, project_name, applicant_id, status, track, track_status, planned_start, planned_end, submitted_at, due_at)
+        VALUES (?,?,?,?,?,?,?,'submitted',?,?,'2026-11-15','2027-01-20',datetime('now'),datetime('now','+14 days'))`)
+        .run(`TH-2026-${String(reqs.length + 1).padStart(4, '0')}`, type, title, 'פירוט העבודה המתוכננת לצורך בדיקה.', addr, 'שדרוג קווי מים – שכונת הפרחים', chiefId,
+          type === 'execution' ? 'fast' : 'regular', type === 'execution' ? 'pending' : 'none');
+      sdb.close(); reqs.push(Number(info.lastInsertRowid));
     }
     await call('POST', `/api/requests/${reqs[0]}/assign`, { assignee_id: eng.id });
     await call('POST', `/api/requests/${reqs[0]}/status`, { status: 'review' });
     const infra = (await call('GET', '/api/infra')).items;
     await call('POST', `/api/requests/${reqs[0]}/approvals`, { infra_body_ids: infra.slice(0, 4).map(b => b.id) });
     await call('POST', `/api/requests/${reqs[0]}/status`, { status: 'coordination' });
-    await call('POST', '/api/tasks', { title: 'סיור שטח עם נציג התאגיד', project_id: p1.id, assignee_id: eng.id, priority: 'גבוהה', start_date: '2026-11-12', due_date: '2026-11-20' });
+    await call('POST', '/api/tasks', { title: 'סיור שטח עם נציג התאגיד', request_id: reqs[0], assignee_id: eng.id, priority: 'גבוהה', start_date: '2026-11-12', due_date: '2026-11-20' });
     await ctx0.close();
 
     // ---------- מובייל + מסכים ----------
-    const PAGES = ['#/', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/requests/new', '#/projects', `#/projects/${p1.id}`, '#/tasks', '#/reports', '#/schedule', '#/budget', '#/documents', '#/appearance', '#/account', '#/admin/users', '#/admin/roles', '#/admin/types', '#/admin/settings', '#/admin/audit', '#/admin/backups'];
+    const PAGES = ['#/', '#/requests?scope=all', `#/requests/${reqs[0]}`, `#/requests/${reqs[1]}/edit`, '#/tasks', '#/reports', '#/documents', '#/appearance', '#/account', '#/admin/users', '#/admin/roles', '#/admin/types', '#/admin/settings', '#/admin/audit', '#/admin/backups'];
     const consoleErrors = []; let xssFired = false;
     async function login(page) {
       await page.goto(base + '/'); await page.fill('input[name=username]', 'chief'); await page.fill('input[name=password]', adminPw);
@@ -189,7 +192,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     for (const [theme, mode, style = 'flat', bg = 'plain'] of themes) {
       const setT = ([t, m, st, b]) => { const r = document.documentElement; r.dataset.theme = t; r.dataset.mode = m; r.dataset.style = st; r.dataset.bg = b; r.dataset.chartAnim = 'off'; };
       let total = 0; const fails = [];
-      for (const p of ['#/', '#/reports', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/projects', '#/admin/users', '#/admin/audit', '#/appearance']) {
+      for (const p of ['#/', '#/reports', '#/requests?scope=all', `#/requests/${reqs[0]}`, '#/tasks', '#/admin/users', '#/admin/audit', '#/appearance']) {
         await page.goto(base + '/' + p); await page.waitForTimeout(350);
         await page.evaluate(setT, [theme, mode, style, bg]);
         await page.waitForTimeout(80);
@@ -294,28 +297,29 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     rec('XSS', 'אין הפרות CSP בזמן ריצה (אין קוד inline)', csp.length === 0, csp.slice(0, 2).join(' | '));
 
     // טפסים: שליחה אמיתית + כישלון רשת
-    await page.goto(base + '/#/requests/new'); await page.waitForSelector('form');
-    await page.selectOption('select[name=type]', 'infra'); await page.fill('input[name=title]', 'בדיקת שליחת טופס מהדפדפן');
-    const [resp] = await Promise.all([page.waitForResponse(r => r.url().endsWith('/api/requests') && r.request().method() === 'POST'), page.click('button[value=submit]')]);
+    const editUrl = `/#/requests/${reqs[1]}/edit`; const isPut = (r) => /\/api\/requests\/\d+$/.test(r.url()) && r.request().method() === 'PUT';
+    await page.goto(base + editUrl); await page.waitForSelector('form input[name=title]');
+    await page.fill('input[name=title]', 'בדיקת שליחת טופס מהדפדפן');
+    const [resp] = await Promise.all([page.waitForResponse(isPut), page.click('button[value=save]')]);
     await page.waitForSelector('.req-number');
-    rec('טפסים', 'טופס בקשה חדשה נשלח לשרת ונשמר (201) ומעביר לבקשה', resp.status() === 201, await page.textContent('.req-number'));
-    await page.goto(base + '/#/requests/new'); await page.waitForSelector('form');
-    await page.route('**/api/requests', r => r.request().method() === 'POST' ? r.abort('internetdisconnected') : r.continue());
-    await page.selectOption('select[name=type]', 'infra'); await page.fill('input[name=title]', 'נפילת רשת');
-    await page.click('button[value=submit]'); await page.waitForSelector('.form-error:not([hidden])');
+    rec('טפסים', 'טופס עריכת בקשה נשלח לשרת ונשמר (200) ומחזיר לבקשה', resp.status() === 200 && (await page.textContent('.req-title')).includes('בדיקת שליחת טופס'), await page.textContent('.req-number'));
+    await page.goto(base + editUrl); await page.waitForSelector('form input[name=title]');
+    await page.route('**/api/requests/*', r => r.request().method() === 'PUT' ? r.abort('internetdisconnected') : r.continue());
+    await page.fill('input[name=title]', 'נפילת רשת');
+    await page.click('button[value=save]'); await page.waitForSelector('.form-error:not([hidden])');
     rec('טפסים', 'כשהשליחה נכשלת (אין רשת) מוצגת שגיאה והטופס נשמר', (await page.inputValue('input[name=title]')) === 'נפילת רשת', await page.textContent('.form-error'));
-    await page.unroute('**/api/requests');
-    await page.route('**/api/requests', r => r.request().method() === 'POST' ? r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"שגיאת שרת"}' }) : r.continue());
-    await page.click('button[value=submit]'); await page.waitForTimeout(300);
+    await page.unroute('**/api/requests/*');
+    await page.route('**/api/requests/*', r => r.request().method() === 'PUT' ? r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"שגיאת שרת"}' }) : r.continue());
+    await page.click('button[value=save]'); await page.waitForTimeout(300);
     rec('טפסים', 'שגיאת שרת 500 מוצגת למשתמש', /שגיאת שרת/.test(await page.textContent('.form-error')));
-    await page.unroute('**/api/requests');
+    await page.unroute('**/api/requests/*');
     // העלאת קובץ דרך הממשק
     await page.goto(base + `/#/requests/${reqs[0]}`); await page.waitForSelector('.dropzone');
     await page.setInputFiles('.dropzone input[type=file]', { name: 'malware.exe', mimeType: 'application/octet-stream', buffer: Buffer.from('MZ') });
     const upErr = await page.textContent('.dropzone [role=status]');
     await page.setInputFiles('.dropzone input[type=file]', { name: 'תוכנית.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF') });
-    await page.waitForSelector('.files .fname');
-    rec('טפסים', 'העלאת קובץ מהממשק: exe נדחה עם הודעה, PDF עולה ומופיע ברשימה', /אינו מורשה/.test(upErr) && (await page.textContent('.files')).includes('תוכנית.pdf'), upErr);
+    await page.waitForSelector('section[aria-labelledby=docs-h] .fname >> text=תוכנית.pdf');
+    rec('טפסים', 'העלאת קובץ מהממשק: exe נדחה עם הודעה, PDF עולה ומופיע ברשימה', /אינו מורשה/.test(upErr) && (await page.textContent('section[aria-labelledby=docs-h]')).includes('תוכנית.pdf'), upErr);
     // העדפות עיצוב נשמרות בשרת
     await page.goto(base + '/#/appearance'); await page.waitForSelector('.swatch');
     await page.click('text=לילה תכנוני'); await page.click('text=שמירת העיצוב'); await page.waitForTimeout(300);
@@ -333,7 +337,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     for (const p of PAGES) { await page.goto(base + '/' + p); await page.waitForTimeout(200); for (const h of await page.evaluate(() => [...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')))) hrefs.add(h); }
     const broken = [];
     for (const h of hrefs) {
-      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?|\/new)?|projects(\/\d+)?|tasks(\?mine=1)?|schedule|reports|budget|documents|appearance|account|admin\/(users|roles|types|settings|audit|backups)|forgot|apply\?kind=(resident|entrepreneur))$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
+      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?)?|tasks(\?mine=1)?|reports|documents|appearance|account|admin\/(users|roles|types|settings|audit|backups)|forgot|apply\?kind=(resident|entrepreneur))$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
       if (h === '#main') continue;
       const url = new URL(h, base + '/'); const st = (await ctx.request.get(url.href)).status();
       out.links.push({ href: h, status: st }); if (st >= 400) broken.push(`${h}:${st}`);
@@ -431,6 +435,13 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       await ap.screenshot({ path: path.join(SHOTS, 'apply-done.png') });
       await ap.click('dialog[open] .btn.primary'); await ap.waitForSelector('.req-number');
       rec('הגשת בקשה', 'המגיש מחובר אוטומטית ורואה את הבקשה שלו', (await ap.textContent('.req-number')).trim() === num);
+      const apNav = await ap.evaluate(() => [...document.querySelectorAll('#sidebar .nav a, #sidebar .nav-group')].map(e => e.textContent.trim()));
+      rec('תפריט', 'למגיש מהציבור אין "ניהול עבודה" ואין "בקשה חדשה" בתפריט', !apNav.some(t => /ניהול עבודה|בקשה חדשה|פרויקטים|תקציב|לוח זמנים|משימות/.test(t)) && apNav.includes('הבקשות שלי'), apNav.join(', '));
+      const reqUrl = ap.url();
+      await ap.goto(base + '/#/tasks'); await ap.waitForTimeout(400);
+      rec('תפריט', 'מגיש מהציבור שמקליד כתובת של ניהול עבודה מוחזר לדף הבית', /#\/$/.test(ap.url()));
+      await ap.goto(reqUrl); await ap.waitForSelector('.req-number');
+
       const docsTxt = await ap.textContent('#docs-h + *, section[aria-labelledby=docs-h]');
       rec('הגשת בקשה', 'טופס המשטרה (PDF) לא גלוי למגיש', !/משטרה/.test(docsTxt) && /tvai\.pdf/.test(docsTxt), docsTxt.slice(0, 120));
       rec('הגשת בקשה', 'אין שגיאות JavaScript בזרימת ההגשה', aErrs.length === 0, aErrs.join(' | '));
@@ -451,6 +462,15 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       await mp.screenshot({ path: path.join(SHOTS, 'request-turn.png'), fullPage: true });
       await mp.goto(base + '/#/admin/types'); await mp.waitForSelector('.type-card');
       rec('הגשת בקשה', 'מסך "סוגי בקשות" מציג את הסוגים עם מטפלים וגורמים', (await mp.$$('.type-card')).length >= 3);
+      const adNav = await mp.evaluate(() => [...document.querySelectorAll('#sidebar .nav a')].map(e => e.textContent.trim()));
+      rec('תפריט', 'אין בתפריט "בקשה חדשה", "פרויקטים", "תקציב", "לוח זמנים" (נמחקו מהמערכת)', !adNav.some(t => ['בקשה חדשה', 'פרויקטים', 'תקציב', 'לוח זמנים'].includes(t)) && adNav.includes('מסמכים') && adNav.includes('משימות'), adNav.join(', '));
+      rec('תפריט', 'מנהל המערכת: אין כפתור "בקשה חדשה" בדף הבית', await (async () => { await mp.goto(base + '/#/'); await mp.waitForSelector('.page-head'); return !(await mp.$('a[href="#/requests/new"]')); })());
+      await mp.goto(base + '/#/documents'); await mp.waitForSelector('.doc-group');
+      const groups = await mp.evaluate(() => [...document.querySelectorAll('.doc-group h2')].map(e => e.textContent.trim()));
+      const reqNums = groups.filter(g => /\d/.test(g) && !g.startsWith('פרויקט'));
+      const sorted = [...reqNums].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      rec('מסמכים', 'מסך המסמכים מקובץ לפי מספר בקשה, מהחדשה לישנה', reqNums.length >= 1 && JSON.stringify(reqNums) === JSON.stringify(sorted) && groups.includes(num), groups.join(' | '));
+      await mp.screenshot({ path: path.join(SHOTS, 'documents-grouped.png'), fullPage: true });
       await mctx.close();
     }
 

@@ -13,6 +13,28 @@ function rec(area, name, pass, detail = '') { results.push({ area, name, pass: !
 const rnd = () => crypto.randomInt(1, 254);
 const pw = () => 'Tst' + crypto.randomBytes(9).toString('base64url') + '7a';
 const APPLY_PW = 'סיסמה' + crypto.randomBytes(6).toString('hex') + '9';
+// בקשות נפתחות רק מהגשה באתר. בדיקות שצריכות בקשה מוכנה יוצרות אותה ישירות במסד (seedReq) או דרך ההגשה הציבורית (applyPublic)
+let seedN = 0;
+function seedReq(db, applicantId, f = {}) {
+  const number = f.number || `SEED-${process.pid}-${++seedN}`;
+  const info = db.prepare(`INSERT INTO requests (number, type, title, description, address, applicant_id, status, track, track_status, submitted_at, due_at)
+    VALUES (?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now','+14 days'))`).run(number, f.type || 'planning', f.title || 'בקשת בדיקה', f.description || null, f.address || null,
+    applicantId, f.status || 'submitted', f.track || 'regular', f.track_status || 'none');
+  return { id: Number(info.lastInsertRowid), number };
+}
+const TEST_POLICE = { applicant_name: 'בודק מערכת', project: 'פרויקט בדיקה', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'עבודת בדיקה', work_time: 'א׳-ה׳', work_hours: '07:00-16:00', contact: 'בודק 052-7654321', notes: '', date: '2026-12-01' };
+let applySeq = 0;
+async function applyPublic(baseUrl, over = {}) {
+  const meta = await new Client(baseUrl).req('GET', '/api/public/apply-meta');
+  const fd = new FormData(); applySeq++;
+  const f = { kind: 'resident', username: `מגיש ${applySeq}${crypto.randomBytes(2).toString('hex')}`, password: 'Ap' + crypto.randomBytes(8).toString('hex') + '9', type: meta.data.types[0].key,
+    email: `apply${applySeq}@example.com`, address: 'הגפן 1, קריית גת', phone: '0501234567', project: 'פרויקט בדיקה', police: JSON.stringify(TEST_POLICE), ...over };
+  for (const [k, val] of Object.entries(f)) fd.append(k, val);
+  const pdfB = Buffer.from('%PDF-1.4\n% test\n%%EOF');
+  fd.append('route_plan', new Blob([pdfB]), 'plan.pdf'); fd.append('work_request', new Blob([pdfB]), 'request.pdf');
+  const c = new Client(baseUrl); const r = await c.req('POST', '/api/public/apply', fd); if (r.data && r.data.csrf) c.csrf = r.data.csrf;
+  return { status: r.status, id: r.data && r.data.id, number: r.data && r.data.number, client: c, error: r.data && r.data.error };
+}
 
 function startServer(env, port) {
   return new Promise((resolve, reject) => {
@@ -112,11 +134,11 @@ class Client {
 
     // ---------- CSRF ----------
     const A = users.applA.c;
-    r = await A.req('POST', '/api/requests', { type: 'planning', title: 'x' }, { noCsrf: true });
+    r = await A.req('PUT', '/api/me/prefs', { mode: 'dark' }, { noCsrf: true });
     rec('CSRF', 'בקשה משנה בלי אסימון CSRF נחסמת (403)', r.status === 403, r.data.error);
-    r = await A.req('POST', '/api/requests', { type: 'planning', title: 'x' }, { headers: { 'X-CSRF-Token': 'forged-token-value-123456789012' } });
+    r = await A.req('PUT', '/api/me/prefs', { mode: 'dark' }, { headers: { 'X-CSRF-Token': 'forged-token-value-123456789012' } });
     rec('CSRF', 'אסימון CSRF מזויף נחסם', r.status === 403);
-    r = await A.req('POST', '/api/requests', { type: 'planning', title: 'x' }, { headers: { Origin: 'https://evil.example' } });
+    r = await A.req('PUT', '/api/me/prefs', { mode: 'dark' }, { headers: { Origin: 'https://evil.example' } });
     rec('CSRF', 'בקשה ממקור זר (Origin) נחסמת גם עם אסימון', r.status === 403);
     r = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'a', password: 'b' }) });
     rec('CSRF', 'טופס התחברות חוצה-אתרים (בלי כותרת מותאמת) נחסם', r.status === 403);
@@ -173,24 +195,25 @@ class Client {
     rec('ראוטים של אדמין', 'גישה ללא התחברות מחזירה 401', r.status === 401);
     rec('לוגים', 'ניסיונות ללא הרשאה נרשמים ביומן', db.prepare("SELECT COUNT(*) c FROM audit_log WHERE action='permission_denied'").get().c >= 10);
 
+    // ---------- תהליך עבודה, IDOR ----------
+    const seeded = seedReq(db, users.applA.id, { type: 'execution', title: '<img src=x onerror=alert(1)> חפירה', address: '"><script>alert(2)</script>', description: 'בדיקה', track: 'fast', track_status: 'pending' });
+    const reqId = seeded.id;
+    r = await A.req('POST', '/api/requests', { type: 'planning', title: 'x', submit: true });
+    rec('תהליך', 'יצירת בקשה פנימית הוסרה מהמערכת – בקשות נפתחות רק מ"הגשת בקשה" באתר', r.status === 404 || r.status === 405, r.status);
     // ---------- אימות טפסים בשרת ----------
     const bad = [];
-    for (const [desc, body] of [['סוג לא קיים', { type: 'hack', title: 'x' }], ['נושא חסר', { type: 'planning' }], ['נושא ארוך מדי', { type: 'planning', title: 'א'.repeat(201) }],
+    for (const [desc, body] of [['סוג לא קיים', { type: 'hack', title: 'x' }], ['נושא חסר', { type: 'planning', title: '' }], ['נושא ארוך מדי', { type: 'planning', title: 'א'.repeat(201) }],
       ['תאריך לא תקין', { type: 'planning', title: 'x', planned_start: '2026-13-45' }], ['גוש עם אותיות', { type: 'planning', title: 'x', gush: 'abc<script>' }],
-      ['מזורז ללא נימוק', { type: 'planning', title: 'x', track: 'fast' }], ['פרויקט לא קיים', { type: 'planning', title: 'x', project_id: 99999 }],
+      ['חלקה עם אותיות', { type: 'planning', title: 'x', helka: '12a' }], ['פרויקט ארוך מדי', { type: 'planning', title: 'x', project_name: 'א'.repeat(201) }],
       ['סיום לפני התחלה', { type: 'planning', title: 'x', planned_start: '2026-05-01', planned_end: '2026-04-01' }], ['אובייקט במקום טקסט', { type: 'planning', title: { $ne: 1 } }]]) {
-      const x = await A.req('POST', '/api/requests', body); if (x.status !== 400) bad.push(`${desc}:${x.status}`);
+      const x = await admin.req('PUT', `/api/requests/${reqId}`, body); if (x.status !== 400) bad.push(`${desc}:${x.status}`);
     }
     rec('אימות טפסים בשרת', '9 קלטים לא תקינים נדחים בשרת (400) גם בלי הדפדפן', bad.length === 0, bad.join(', '));
-    r = await A.req('POST', '/api/requests', '{"type":"planning",', { headers: { 'Content-Type': 'application/json' } });
+    r = await admin.req('PUT', `/api/requests/${reqId}`, '{"type":"planning",', { headers: { 'Content-Type': 'application/json' } });
     rec('אימות טפסים בשרת', 'JSON שבור נדחה בהודעה כללית', r.status === 400 && !/at |stack|Error:/.test(JSON.stringify(r.data)));
-    r = await A.req('POST', '/api/requests', 'x'.repeat(1_100_000), { headers: { 'Content-Type': 'application/json' } });
+    r = await admin.req('PUT', `/api/requests/${reqId}`, 'x'.repeat(1_100_000), { headers: { 'Content-Type': 'application/json' } });
     rec('אימות טפסים בשרת', 'גוף בקשה מעל 1MB נדחה (413)', r.status === 413);
 
-    // ---------- תהליך עבודה, IDOR ----------
-    r = await A.req('POST', '/api/requests', { type: 'execution', title: '<img src=x onerror=alert(1)> חפירה', address: '"><script>alert(2)</script>', description: 'בדיקה', track: 'fast', fast_reason: 'עבודה דחופה', submit: true });
-    const reqId = r.data.id;
-    rec('תהליך', 'מבקש מגיש בקשה במסלול מזורז', r.status === 201, r.data.number);
     r = await users.applB.c.req('GET', `/api/requests/${reqId}`);
     rec('הרשאות (IDOR)', 'מבקש אחר לא יכול לצפות בבקשה שאינה שלו (404)', r.status === 404);
     r = await users.applB.c.req('PUT', `/api/requests/${reqId}`, { title: 'נפרץ' });
@@ -252,7 +275,7 @@ class Client {
     // ---------- דוחות: סינון לפי הרשאה ----------
     const repB = (await users.applB.c.req('GET', '/api/reports?months=12')).data;
     const repE = (await E.req('GET', '/api/reports?months=12')).data;
-    rec('הרשאות (IDOR)', 'דוחות וגרפים: מבקש רואה רק את הבקשות שלו, בלי תקציב ומשימות', repB.total === 0 && repB.budget === null && repB.tasks === null && repE.total >= 1, `מבקש: ${repB.total}, מהנדס: ${repE.total}`);
+    rec('הרשאות (IDOR)', 'דוחות וגרפים: מבקש רואה רק את הבקשות שלו, בלי משימות', repB.total === 0 && repB.budget === undefined && repB.tasks === null && repE.total >= 1, `מבקש: ${repB.total}, מהנדס: ${repE.total}`);
     r = await E.req('GET', "/api/reports?months=1;DROP&type=' OR 1=1");
     rec('אימות טפסים בשרת', 'פרמטרים לא תקינים בדוחות מוחלפים בברירת מחדל', r.status === 200 && r.data.months === 12 && r.data.type === null);
 
@@ -306,8 +329,8 @@ class Client {
     // ---------- מספור בקשות ----------
     {
       r = await admin.req('PUT', '/api/admin/settings', { req_prefix: 'BD', req_with_year: false, req_pad: 3, req_next: 50 });
-      const n1 = (await A2.req('POST', '/api/requests', { type: 'planning', title: 'מספור 1', submit: true })).data.number;
-      const n2 = (await A2.req('POST', '/api/requests', { type: 'planning', title: 'מספור 2', submit: true })).data; n2Id = n2.id;
+      const n1 = (await applyPublic(base)).number;
+      const n2 = await applyPublic(base); n2Id = n2.id;
       rec('מספור בקשות', 'הגדרת קידומת, ספרות ומספר התחלה: BD-050 ואז BD-051', n1 === 'BD-050' && n2.number === 'BD-051', `${n1}, ${n2.number}`);
       r = await admin.req('PUT', '/api/admin/settings', { req_prefix: '<script>' });
       rec('מספור בקשות', 'קידומת עם תווים לא חוקיים נדחית', r.status === 400);
@@ -406,16 +429,16 @@ class Client {
     const concat = src.split('\n').filter(l => /prepare\(`[^`]*\$\{(?!where|REQ_SELECT|PROJ_SELECT|cols\.map|mine \?|DONE\}|table\})/.test(l));
     rec('SQL Injection', 'סריקת קוד: אין שרשור קלט משתמש לשאילתות', concat.length === 0, concat.length ? concat[0].trim().slice(0, 100) : 'רק שמות עמודות קבועים משורשרים; כל הערכים כ-?');
 
-    // ---------- תקציב: אימות סכומים ----------
-    r = await E2.req('POST', '/api/projects', { name: 'פרויקט בדיקה', budget: 100000, start_date: '2026-01-01', end_date: '2026-12-31' });
-    const projId = r.data.id;
-    const money = [];
-    for (const amount of [-500, 0, 'abc', '1e309', 1e12, '100; DROP']) { const x = await E2.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'x', amount, entry_date: '2026-03-01' }); if (x.status !== 400) money.push(`${amount}:${x.status}`); }
-    r = await E2.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'קבלן', amount: '12,500.555', entry_date: '2026-03-01' });
-    const stored = db.prepare('SELECT amount FROM budget_entries WHERE project_id=?').get(projId);
-    rec('מחירים/סכומים', 'סכומים שליליים, אפס, טקסט ואינסוף נדחים; סכום מעוגל לאגורות בשרת', money.length === 0 && stored.amount === 12500.56, money.join(',') || `נשמר ${stored.amount}`);
-    r = await A2.req('POST', `/api/projects/${projId}/budget`, { kind: 'actual', description: 'x', amount: 5, entry_date: '2026-03-01' });
-    rec('מחירים/סכומים', 'רק בעלי הרשאת תקציב יכולים להוסיף הוצאות', r.status === 403);
+    // ---------- מסכים שהוסרו ----------
+    {
+      const gone = [];
+      for (const [m, u] of [['GET', '/api/projects'], ['POST', '/api/projects'], ['GET', '/api/projects/1'], ['POST', '/api/projects/1/budget'], ['DELETE', '/api/budget/1'], ['GET', '/api/schedule'], ['POST', '/api/requests']]) {
+        const x = await admin.req(m, u, m === 'GET' || m === 'DELETE' ? undefined : { name: 'x' }); if (x.status !== 404 && x.status !== 405) gone.push(`${m} ${u}:${x.status}`);
+      }
+      rec('מסכים שהוסרו', 'בקשה חדשה פנימית, פרויקטים, תקציב ולוח זמנים הוסרו גם מהשרת (404)', gone.length === 0, gone.join(', '));
+      const permKeys = (await admin.req('GET', '/api/admin/permissions')).data.items.map(x => x.key);
+      rec('מסכים שהוסרו', 'ההרשאות של פרויקטים, תקציב ובקשה חדשה הוסרו מלוח הבקרה', !permKeys.some(k => /^(projects|budget)\.|^requests\.create$/.test(k)), permKeys.join(','));
+    }
 
     // ---------- העלאת קבצים ----------
     async function upload(c, name, buf, extra = {}) {
@@ -594,7 +617,7 @@ class Client {
       await cA.req('POST', '/api/auth/change-password', { current: adminPw, next: adminPw + 'x' }).then(x => { cA.csrf = x.data.csrf; });
       const roles2 = (await cA.req('GET', '/api/admin/roles')).data.items;
       const nu = await cA.req('POST', '/api/admin/users', { username: 'cloud.user', full_name: 'משתמש ענן', role_id: roles2[4].id, password: pw(), no_request: true, no_infra: true });
-      const rq = await cA.req('POST', '/api/requests', { type: 'planning', title: 'בקשה שנשמרה בענן', submit: true });
+      const rq = { data: await applyPublic(cb) };
       const fdc = new FormData(); fdc.append('request_id', String(rq.data.id)); fdc.append('file', new Blob([Buffer.from('%PDF-1.4\n% cloud\n%%EOF')]), 'cloud.pdf');
       const cd = await cA.req('POST', '/api/documents', fdc);
       const fdl = new FormData(); fdl.append('file', new Blob([Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(100, 7)])]), 'logo.png');
@@ -658,7 +681,7 @@ class Client {
       const b2 = await mk('body.two', { role_id: rid5('גורם תשתית'), email: 'b2@example.gov.il', infra_body_id: infra5[1].id });
       const handler = await mk('handler', { role_id: rid5('מהנדס / מאשר'), email: 'handler@example.gov.il', no_infra: true });
       // סוג בקשה עם מטפל, סדר גורמים ותפקיד ייעודי ליזם
-      const ent = await ad.req('POST', '/api/admin/roles', { name: 'יזם – עבודות בדרכים', perms: ['requests.view_own', 'requests.create', 'files.upload', 'files.download'] });
+      const ent = await ad.req('POST', '/api/admin/roles', { name: 'יזם – עבודות בדרכים', perms: ['requests.view_own', 'files.upload', 'files.download'] });
       const badRole = await ad.req('POST', '/api/admin/request-types', { name: 'ניסיון', role_resident: rid5('מנהל מערכת') });
       rec('סוגי בקשות', 'אי אפשר לתת לנרשמים מהציבור תפקיד עם הרשאות ניהול', badRole.status === 400, badRole.data.error);
       const ty = await ad.req('POST', '/api/admin/request-types', { name: 'עבודות בדרכים', description: 'חפירה, הנחת קווים ותיקונים בשטח ציבורי', handler_ids: [handler.id], infra_chain: [infra5[0].id, infra5[1].id], role_entrepreneur: ent.data.id });
