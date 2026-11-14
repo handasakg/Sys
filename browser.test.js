@@ -267,7 +267,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await page.screenshot({ path: path.join(SHOTS, 'topbar-1280.png'), clip: { x: 0, y: 0, width: 1280, height: 140 } });
 
     // משתמש חדש: שדות חובה
-    await page.goto(base + '/#/admin/users'); await page.waitForSelector('h1');
+    await page.goto(base + '/#/admin/users'); await page.waitForSelector('.user-folder');
     await page.click('.page-head .btn.primary'); await page.waitForSelector('dialog[open]');
     await page.fill('dialog[open] input[name=full_name]', 'בדיקה'); await page.fill('dialog[open] input[name=username]', 'ui.test'); await page.fill('dialog[open] input[name=password]', 'Abcdef123456xyz');
     await page.click('dialog[open] .dlg-foot .btn.primary'); await page.waitForTimeout(200);
@@ -281,7 +281,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     await page.goto(base + '/'); await page.waitForSelector('.sidebar');
 
     // חלון קופץ: פוקוס, Esc, החזרת פוקוס
-    await page.goto(base + '/#/admin/users'); await page.waitForSelector('h1');
+    await page.goto(base + '/#/admin/users'); await page.waitForSelector('.user-folder');
     await page.evaluate(() => { document.documentElement.dataset.theme = 'drafting'; document.documentElement.dataset.mode = 'light'; });
     const opener = page.locator('.page-head .btn.primary'); await opener.focus(); await page.keyboard.press('Enter');
     await page.waitForSelector('dialog[open]');
@@ -416,7 +416,7 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
     for (const p of PAGES) { await page.goto(base + '/' + p); await page.waitForTimeout(200); for (const h of await page.evaluate(() => [...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')))) hrefs.add(h); }
     const broken = [];
     for (const h of hrefs) {
-      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?)?|tasks(\?mine=1)?|reports|documents(\?tab=(open|done))?|appearance|account|admin\/(users|roles|types|settings|audit|backups)|forgot|apply\?kind=(resident|entrepreneur))$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
+      if (h.startsWith('#/')) { const ok = /^#\/(|requests(\?.*|\/\d+(\/edit)?)?|tasks(\?mine=1)?|reports|documents(\?tab=(open|done))?|appearance|account|admin(\/(users|roles|types|settings|audit|backups))?|forgot|apply\?kind=(resident|entrepreneur))$/.test(h.split('&')[0]); if (!ok) broken.push(h); continue; }
       if (h === '#main') continue;
       const url = new URL(h, base + '/');
       if (url.origin !== base) { out.links.push({ href: h, status: 'external' }); if (!/^https:\/\/(www\.)?(gov\.il|govmap\.gov\.il)\//.test(url.href)) broken.push(`${h}:unexpected-external`); continue; } // אין אינטרנט בסביבת הבדיקה
@@ -496,7 +496,18 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('סנכרון גורמים', 'בבחירת סוג הבקשה מוצגים למגיש גורמי התשתית הקבועים של הסוג, לפי הסדר', hintSteps.join('|') === chainNames.map((n, i) => (i + 1) + n).join('|'), hintSteps.join('|'));
       await ap.fill('input[name=email]', 'ronit@example.com'); await ap.fill('form.apply-form input[name=phone]', '050-1234567');
       await ap.fill('input[name=address]', 'רחוב הנרקיס 7, קריית גת'); await ap.fill('form.apply-form input[name=project]', 'חיבור ביוב לבית פרטי');
-      const pdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
+      // PDF אמיתי (עמוד אחד עם טקסט ומלבן), כדי לבדוק שהצפייה מציירת אותו בפועל
+      const pdf = (() => {
+        const content = 'BT /F1 28 Tf 72 700 Td (Work request - test) Tj ET 0.1 0.2 0.6 rg 72 400 300 200 re f';
+        const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+          '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+          `<< /Length ${content.length} >>\nstream\n${content}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+        let out = '%PDF-1.4\n'; const offs = [];
+        objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+        const x = out.length;
+        out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offs.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('') + `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;
+        return Buffer.from(out, 'latin1');
+      })();
       await ap.setInputFiles('#f-route_plan', { name: 'tvai.txt', mimeType: 'text/plain', buffer: Buffer.from('x') });
       rec('הגשת בקשה', 'תוכנית תוואי דוחה קובץ שאינו PDF/DWF כבר בבחירה', (await ap.textContent('.file-card.bad .file-name')).includes('PDF'));
       await ap.setInputFiles('#f-route_plan', { name: 'tvai.pdf', mimeType: 'application/pdf', buffer: pdf });
@@ -586,17 +597,62 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('סוגי בקשות', 'אין יותר "מטפלים אוטומטיים" (לא בחלון ולא בתיאור הראשי)', !/מטפלים אוטומטיים/.test(dlgText) && !/מטפלים/.test(card0.page));
       rec('סוגי בקשות', 'במקום "ייקבעו ידנית על ידי אחראי המיפוי" מוצגים הגורמים שנבחרו, לפי הסדר', !/ייקבעו ידנית/.test(card0.page) && card0.steps.length === chosen.length && chosen.length === 4 && card0.steps.every((t, i) => t === (i + 1) + chosen[i]), JSON.stringify(card0.steps));
       await mp.screenshot({ path: path.join(SHOTS, 'types.png'), fullPage: true });
-      const adNav = await mp.evaluate(() => [...document.querySelectorAll('#sidebar .nav > a, #sidebar .nav-folder')].map(e => e.textContent.trim()));
+      const adNav = await mp.evaluate(() => [...document.querySelectorAll('#sidebar .nav > a')].map(e => e.textContent.trim()));
       rec('תפריט', 'אין בתפריט "בקשה חדשה", "פרויקטים", "תקציב", "לוח זמנים" (נמחקו מהמערכת)', !adNav.some(t => ['בקשה חדשה', 'פרויקטים', 'תקציב', 'לוח זמנים'].includes(t)) && adNav.includes('מסמכים') && adNav.includes('משימות'), adNav.join(', '));
+      {
+        // לוח בקרה לניהול: פריט אחד בתפריט, והמסכים כלשוניות בפנים
+        const adminLinks = await mp.evaluate(() => [...document.querySelectorAll('#sidebar .nav a')].filter(a => a.getAttribute('href').startsWith('#/admin')).map(a => a.textContent.trim()));
+        await mp.click('#sidebar .nav a[href="#/admin"]'); await mp.waitForFunction(() => location.hash === '#/admin/users' && document.querySelector('.user-folder'));
+        const t1 = await mp.evaluate(() => ({ hash: location.hash, tabs: [...document.querySelectorAll('.admin-tab')].map(a => a.textContent.trim()), cur: document.querySelector('.admin-tab[aria-current=page]').textContent.trim(), h1: document.querySelector('main h1').textContent, nav: document.querySelector('#sidebar .nav a[href="#/admin"]').getAttribute('aria-current') }));
+        await mp.click('.admin-tab >> text=הגדרות וקבצים'); await mp.waitForSelector('[name=login_heading]');
+        const t2 = await mp.evaluate(() => ({ hash: location.hash, cur: document.querySelector('.admin-tab[aria-current=page]').textContent.trim(), nav: document.querySelector('#sidebar .nav a[href="#/admin"]').getAttribute('aria-current') }));
+        rec('לוח בקרה לניהול', 'בתפריט הצד יש קטגוריה אחת "לוח בקרה לניהול", וכל מסכי הניהול מוצגים בתוכה כלשוניות',
+          adminLinks.join() === 'לוח בקרה לניהול' && t1.hash === '#/admin/users' && t1.tabs.join() === 'משתמשים,תפקידים והרשאות,סוגי בקשות,הגדרות וקבצים,יומן אבטחה,גיבויים' && t1.cur === 'משתמשים' && t1.nav === 'page' && t2.hash === '#/admin/settings' && t2.cur === 'הגדרות וקבצים' && t2.nav === 'page', JSON.stringify([adminLinks, t1, t2]));
+        await mp.setViewportSize({ width: 390, height: 800 }); await mp.goto(base + '/#/admin/backups'); await mp.waitForSelector('.admin-tab[aria-current=page]');
+        const mob = await mp.evaluate(() => ({ over: document.documentElement.scrollWidth > innerWidth + 1, vis: (() => { const r = document.querySelector('.admin-tab[aria-current=page]').getBoundingClientRect(); return r.left >= -1 && r.right <= innerWidth + 1; })() }));
+        await mp.screenshot({ path: path.join(SHOTS, 'admin-tabs-mobile.png') });
+        await mp.setViewportSize({ width: 1280, height: 900 });
+        rec('לוח בקרה לניהול', 'בנייד: הלשוניות נגללות בתוך השורה, הלשונית הפעילה גלויה, בלי גלילה אופקית של הדף', !mob.over && mob.vis, JSON.stringify(mob));
+        await mp.goto(base + '/#/admin/settings'); await mp.waitForSelector('.admin-tabs');
+        await mp.screenshot({ path: path.join(SHOTS, 'admin-tabs.png') });
+        await mp.goto(base + '/#/admin/backups'); await mp.waitForSelector('.admin-body .panel');
+        rec('לוח בקרה לניהול', 'במסך גיבויים לא מוצג הטקסט "null"', await mp.evaluate(() => !/(^|\s)null(\s|$)/.test(document.querySelector('main').innerText)));
+        // בקשה שנדחתה: הודעה בולטת עם הסיבה והנחיה להגיש בקשה חדשה
+        { const d0 = new (require('node:sqlite').DatabaseSync)(path.join(dataDir, 'app.db'));
+          const src = d0.prepare('SELECT type, applicant_id FROM requests WHERE number = ?').get(num);
+          const rid = Number(d0.prepare(`INSERT INTO requests (number, type, title, applicant_id, status, track, track_status, submitted_at, closed_at) VALUES ('RJ-0001', ?, 'בקשה שנדחתה', ?, 'rejected', 'regular', 'none', datetime('now'), datetime('now'))`).run(src.type, src.applicant_id).lastInsertRowid);
+          d0.prepare("INSERT INTO request_history (request_id, user_id, action, details) VALUES (?, NULL, 'סטטוס: נדחתה', 'חסרה תוכנית הסדרי תנועה')").run(rid); d0.close();
+          await mp.goto(base + '/#/requests/' + rid); await mp.waitForSelector('.reject-note');
+          const rj = await mp.textContent('.reject-note');
+          await mp.screenshot({ path: path.join(SHOTS, 'rejected.png') });
+          rec('דחיית בקשה', 'בבקשה שנדחתה מוצגת הסיבה והנחיה להגיש בקשה חדשה עם השלמת הפרטים', /חסרה תוכנית הסדרי תנועה/.test(rj) && /להגיש בקשה חדשה עם השלמת הפרטים/.test(rj), rj);
+          // המגיש: כפתור "הגשת בקשה חדשה" → טופס ההגשה עם "יש לי כבר שם משתמש וסיסמה" מסומן ושם המשתמש ממולא
+          const rc = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const rp = await rc.newPage();
+          await rp.goto(base + '/'); await rp.fill('input[name=username]', 'רונית אברהם'); await rp.fill('input[name=password]', 'BrApplyTest2026x'); await rp.click('form button[type=submit]'); await rp.waitForSelector('#gsearch');
+          await rp.goto(base + '/#/requests/' + rid); await rp.waitForSelector('.reject-note a.btn');
+          await rp.click('.reject-note a.btn'); await rp.waitForSelector('form.apply-form');
+          const ex = await rp.evaluate(() => { const f = document.querySelector('form.apply-form'); const lg = [...f.querySelectorAll('legend')].map(l => l.textContent);
+            const chk = f.querySelector('.existing-box'); const userFs = f.querySelector('input[name=username]').closest('fieldset');
+            return { checked: f.existing.checked, user: f.username.value, emailHidden: f.email.closest('.field').hidden && f.email.disabled, legend: lg[0],
+              above: !!(chk.compareDocumentPosition(userFs) & Node.DOCUMENT_POSITION_FOLLOWING), loggedOut: !document.querySelector('#gsearch'), minlen: f.password.getAttribute('minlength') }; });
+          await rp.screenshot({ path: path.join(SHOTS, 'apply-existing.png'), fullPage: true });
+          await rp.uncheck('form.apply-form input[name=existing]');
+          const ex2 = await rp.evaluate(() => { const f = document.querySelector('form.apply-form'); return { emailShown: !f.email.closest('.field').hidden && !f.email.disabled, minlen: f.password.getAttribute('minlength') }; });
+          await rc.close();
+          rec('הגשה עם משתמש קיים', 'אחרי דחייה: "הגשת בקשה חדשה" פותח את הטופס עם "יש לי כבר שם משתמש וסיסמה" מסומן, מעל פרטי הכניסה, ושם המשתמש ממולא – בלי משתמש חדש',
+            ex.checked && ex.user === 'רונית אברהם' && ex.emailHidden && ex.legend === 'כניסה עם המשתמש הקיים' && ex.above && ex.loggedOut && !ex.minlen && ex2.emailShown && ex2.minlen === '12', JSON.stringify([ex, ex2])); }
+      }
       rec('תפריט', 'מנהל המערכת: אין כפתור "בקשה חדשה" בדף הבית', await (async () => { await mp.goto(base + '/#/'); await mp.waitForSelector('.page-head'); return !(await mp.$('a[href="#/requests/new"]')); })());
-      // מסמכים: תיקייה בתפריט הצד + תיקייה לכל בקשה + לשוניות פתוחות/שטופלו
-      await mp.goto(base + '/#/'); await mp.waitForSelector('.nav-folder');
-      const fBefore = await mp.getAttribute('.nav-folder', 'aria-expanded');
-      await mp.click('.nav-folder'); const fAfter = await mp.getAttribute('.nav-folder', 'aria-expanded');
-      if (fAfter !== 'true') await mp.click('.nav-folder');
-      const subLinks = await mp.evaluate(() => [...document.querySelectorAll('.nav-sub a')].map(a => a.textContent.trim()));
-      rec('מסמכים', 'בתפריט הצד "מסמכים" היא תיקייה שנפתחת ונסגרת, ובתוכה "בקשות פתוחות" ו"בקשות שטופלו"', fBefore !== fAfter && subLinks.join() === 'בקשות פתוחות,בקשות שטופלו', `${fBefore}→${fAfter} ${subLinks}`);
-      await mp.click('.nav-sub a >> text=בקשות פתוחות'); await mp.waitForSelector('.doc-folder');
+      // מסמכים: לחיצה אחת בתפריט הצד נכנסת ישר, והלשוניות פתוחות/שטופלו בפנים מעל
+      await mp.goto(base + '/#/'); await mp.waitForSelector('#sidebar .nav a[href="#/documents"]');
+      const noFolder = await mp.evaluate(() => !document.querySelector('#sidebar .nav-folder') && !document.querySelector('#sidebar .nav-sub'));
+      await mp.click('#sidebar .nav a[href="#/documents"]'); await mp.waitForSelector('.doc-folder');
+      const docTabs = await mp.evaluate(() => {
+        const tabs = document.querySelector('main .tabs'); const search = document.getElementById('dsearch');
+        return { names: [...tabs.querySelectorAll('[role=tab]')].map(b => b.firstChild.textContent), sel: tabs.querySelector('[aria-selected=true]').firstChild.textContent,
+          above: !!(tabs.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING), cur: document.querySelector('#sidebar .nav a[href="#/documents"]').getAttribute('aria-current') };
+      });
+      rec('מסמכים', 'בתפריט הצד "מסמכים" נכנס ישר (בלי לבחור), והלשוניות "בקשות פתוחות" / "בקשות שטופלו" בפנים מעל', noFolder && docTabs.names.join() === 'בקשות פתוחות,בקשות שטופלו' && docTabs.sel === 'בקשות פתוחות' && docTabs.above && docTabs.cur === 'page', JSON.stringify(docTabs));
       const closedByDefault = await mp.evaluate(() => [...document.querySelectorAll('.doc-folder')].every(d => !d.open));
       await mp.click('.doc-folder >> nth=0 >> summary'); const opened = await mp.evaluate(() => document.querySelector('.doc-folder').open && !!document.querySelector('.doc-folder .files li'));
       await mp.click('.doc-folder >> nth=0 >> summary'); const reclosed = await mp.evaluate(() => !document.querySelector('.doc-folder').open);
@@ -634,11 +690,16 @@ const pw = () => 'Br' + crypto.randomBytes(9).toString('base64url') + '9x';
       rec('פרטי הבקשה', 'שעות העבודה מטופס המשטרה מופיעות בפרטי הבקשה', whRow === '07:00-16:00', whRow);
       rec('פרטי הבקשה', 'בבקשה אין יותר כתובת העבודה, גוש/חלקה, מועדי עבודה ויעד לטיפול', !dtNames.some(t => ['כתובת העבודה', 'גוש / חלקה', 'מועדי עבודה', 'יעד לטיפול'].includes(t)), dtNames.join(', '));
       rec('זמן עבודה', 'בעמוד הבקשה מופיע "זמן עבודה" מטופס המשטרה, ואין יותר "מסלול"', wtRow.wt === 'א׳-ה׳' && !wtRow.track && !(await mp.$('.chip.fast')), JSON.stringify(wtRow));
-      await mp.click('section[aria-labelledby=docs-h] button[aria-label="צפייה בbakasha.pdf"]'); await mp.waitForSelector('dialog[open] iframe.viewer-frame');
-      const vsrc = await mp.getAttribute('dialog[open] iframe.viewer-frame', 'src');
-      const vfr = await (await mp.$('dialog[open] iframe.viewer-frame')).contentFrame(); await mp.waitForTimeout(600);
+      const cspErrs = []; mp.on('console', (m) => { if ((m.type() === 'error' && /Content Security Policy|Refused/.test(m.text())) || /pdf\.js/.test(m.text())) cspErrs.push(m.text()); });
+      await mp.click('section[aria-labelledby=docs-h] button[aria-label="צפייה בbakasha.pdf"]'); await mp.waitForSelector('dialog[open] .pdf-page canvas', { timeout: 20000 }).catch(() => {});
+      const vsrc = await mp.evaluate(() => { const a = document.querySelector('dialog[open] a[target=_blank]'); return a ? a.getAttribute('href') : ''; });
+      // PDF מוצג בתוך המערכת עם pdf.js: העמוד מצויר בפועל (לא ריק), בלי תלות בתצוגת ה-PDF של הדפדפן
+      const drawn = await mp.evaluate(() => { const c = document.querySelector('dialog[open] .pdf-page canvas'); if (!c) return { canvas: false }; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let ink = 0; for (let i = 0; i < d.length; i += 16) if (d[i] < 200) ink++; return { canvas: true, w: c.width, ink, count: document.querySelector('dialog[open] .pdf-count').textContent }; });
       const vResp = await mp.evaluate(async (u) => { const r = await fetch(u); return { st: r.status, cd: r.headers.get('content-disposition'), ct: r.headers.get('content-type') }; }, vsrc);
-      rec('צפייה בקבצים', 'לחיצה על "צפייה" פותחת את הקובץ בתוך המערכת, בלי להוריד אותו', /\/view$/.test(vsrc) && vResp.st === 200 && /^inline/.test(vResp.cd) && vResp.ct === 'application/pdf' && !!vfr, JSON.stringify(vResp));
+      rec('צפייה בקבצים', 'לחיצה על "צפייה" מציגה את ה-PDF בתוך המערכת (העמוד מצויר בפועל), בלי להוריד אותו', /\/view$/.test(vsrc) && vResp.st === 200 && /^inline/.test(vResp.cd) && vResp.ct === 'application/pdf' && drawn.canvas && drawn.ink > 50 && !cspErrs.length, JSON.stringify({ vResp, drawn, cspErrs }));
+      await mp.click('dialog[open] .pdf-bar button[aria-label=הגדלה]'); await mp.waitForTimeout(500);
+      const pdfZoom = await mp.evaluate(() => ({ z: document.querySelector('dialog[open] .pdf-zoom').textContent, w: document.querySelector('dialog[open] .pdf-page').getBoundingClientRect().width, box: document.querySelector('dialog[open] .pdf-pages').clientWidth }));
+      rec('צפייה בקבצים', 'הגדלה והקטנה של ה-PDF בתצוגה', pdfZoom.z === "125%" && pdfZoom.w > pdfZoom.box, JSON.stringify(pdfZoom));
       await mp.screenshot({ path: path.join(SHOTS, 'file-viewer.png') });
       await mp.click('dialog[open] .dlg-foot button >> text=סגירה');
       // משימות: אחראי = גורם תשתית ואיש הקשר שלו

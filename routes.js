@@ -78,10 +78,10 @@ function permsList(req) { return [...req.user.perms]; }
 // ---------------- אימות משתמשים ----------------
 route('GET', '/api/health', () => ({ ok: true }));
 
-route('POST', '/api/auth/login', async (req, res) => {
+// בדיקת שם משתמש וסיסמה (התחברות, והגשת בקשה עם משתמש קיים): הגבלת קצב, נעילה אחרי 5 כישלונות.
+// מחזיר { user } בהצלחה, או תשובת שגיאה מוכנה (401 / 429)
+async function checkCredentials(req, res, username, password) {
   const ip = sec.clientIp(req);
-  const username = normUser(v.str(req.body.username, { max: 60, required: true, name: 'שם משתמש' }));
-  const password = typeof req.body.password === 'string' ? req.body.password.slice(0, 256) : '';
   const rlIp = sec.rateLimit('login-ip:' + ip, 20, 15 * 60000, { persist: true });
   const rlUser = sec.rateLimit('login-user:' + username.toLowerCase(), 10, 15 * 60000, { persist: true });
   if (!rlIp.ok || !rlUser.ok) {
@@ -106,6 +106,14 @@ route('POST', '/api/auth/login', async (req, res) => {
     return status(401, { error: 'שם משתמש או סיסמה שגויים, או שהחשבון נעול זמנית' });
   }
   db.prepare('UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login = ? WHERE id = ?').run(nowIso(), user.id);
+  return { user };
+}
+route('POST', '/api/auth/login', async (req, res) => {
+  const username = normUser(v.str(req.body.username, { max: 60, required: true, name: 'שם משתמש' }));
+  const password = typeof req.body.password === 'string' ? req.body.password.slice(0, 256) : '';
+  const chk = await checkCredentials(req, res, username, password);
+  if (!chk.user) return chk;
+  const user = chk.user;
   auth.destroySession(req, res); // סשן חדש בכל התחברות
   const remember = req.body.remember === true;
   const csrf = auth.createSession(res, user.id, req, remember);
@@ -484,7 +492,7 @@ async function issueApproval(req, requestId, adminComment) {
     request: r, police: policeData(r.id), applicant, approvals, admin: { name: req.user.full_name, comment: adminComment }, guidelines: getSetting('approval.guidelines'), secret: r.number });
   const st = up.storeBuffer(buffer);
   const fname = `אישור לביצוע עבודה – ${r.number}.pdf`;
-  try { await cloud.putFile('uploads/' + st.stored, buffer, 'application/pdf'); } catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); }
+  try { await cloud.putFile('uploads/' + st.stored, up.rawStored(st.stored), 'application/pdf'); } catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); }
   const info = db.prepare(`INSERT INTO documents (request_id, category, original_name, stored_name, mime, size, sha256, uploaded_by, visibility) VALUES (?, 'אישור לביצוע עבודה', ?, ?, 'application/pdf', ?, ?, ?, 'shared')`)
     .run(r.id, fname, st.stored, st.size, st.sha256, req.user.id);
   history(r.id, req.user.id, 'הופק מסמך אישור לביצוע עבודה', `קוד מסמך ${code}`);
@@ -541,6 +549,15 @@ route('POST', '/api/requests/:id/status', async (req) => {
     const ap = db.prepare('SELECT id, full_name, email FROM users WHERE id = ?').get(r.applicant_id);
     if (ap && ap.id !== req.user.id) mailUsers([ap], `בקשה ${r.number} הוחזרה אליך לתיקון – ${sysTitle()}`,
       `שלום ${ap.full_name},\n\nבקשה ${r.number} (${r.title}) הוחזרה אליך לתיקון על ידי ${req.user.full_name}.\n\nסיבת ההחזרה:\n${comment}\n\nלכניסה לבקשה:\n${linkTo(r.id)}\n\n${sysTitle()}`);
+  }
+  // דחיית בקשה: מגיש הבקשה מקבל אימייל עם סיבת הדחייה והנחיה להגיש בקשה חדשה עם השלמת הפרטים
+  if (to === 'rejected') {
+    const ap = db.prepare('SELECT id, full_name, email, username FROM users WHERE id = ?').get(r.applicant_id);
+    const applyLink = r.applicant_kind && KINDS[r.applicant_kind] ? `${config.publicUrl}/#/apply?kind=${r.applicant_kind}&existing=1` : `${config.publicUrl}/`;
+    if (ap && ap.id !== req.user.id) mailUsers([ap], `בקשה ${r.number} נדחתה – יש להגיש בקשה חדשה – ${sysTitle()}`,
+      `שלום ${ap.full_name},\n\nבקשה ${r.number} (${r.title}) נדחתה על ידי ${req.user.full_name}.\n\nסיבת הדחייה:\n${comment}\n\n` +
+      `הבקשה נסגרה ולא ניתן להמשיך בטיפול בה.\nיש להגיש בקשה חדשה עם השלמת הפרטים החסרים, בהתאם לסיבת הדחייה.\n\n` +
+      `להגשת בקשה חדשה (כפתור "הגשת בקשה" במסך הכניסה לאתר). אין צורך לפתוח משתמש חדש – מסמנים "יש לי כבר שם משתמש וסיסמה במערכת" ונכנסים עם שם המשתמש ${ap.username ? '"' + ap.username + '" ' : ''}והסיסמה הקיימים:\n${applyLink}\n\nלצפייה בבקשה שנדחתה:\n${linkTo(r.id)}\n\n${sysTitle()}`);
   }
   if (to === 'pending_admin') notifySysAdmins(`בקשה ${r.number} ממתינה לאישורך הסופי`, `#/requests/${r.id}`, req.user.id);
   audit(req, 'request_status', { id: r.id, from: r.status, to });
@@ -658,7 +675,7 @@ route('POST', '/api/documents', async (req) => {
   try { f = await up.handleUpload(req); }
   catch (e) { if (e.status === 415 || e.status === 413) audit(req, 'upload_rejected', { reason: e.message }, 'warning'); throw e; }
   try {
-    try { await cloud.putFile('uploads/' + f.stored, fs.readFileSync(up.storedPath(f.stored)), f.mime); }
+    try { await cloud.putFile('uploads/' + f.stored, up.rawStored(f.stored), f.mime); }
     catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); throw new HttpError(503, 'שמירת הקובץ בענן נכשלה. נסו שוב בעוד רגע.'); }
     const requestId = v.id(f.fields.request_id);
     assertDocTarget(req, requestId);
@@ -699,13 +716,14 @@ route('GET', '/api/documents/:id/download', async (req, res) => {
   const d = loadDoc(req);
   const file = up.storedPath(d.stored_name);
   if (!(await cloud.ensureLocal('uploads/' + d.stored_name, file))) throw new HttpError(404, 'הקובץ לא נמצא באחסון');
+  const buf = up.readStored(d.stored_name); // הקובץ נשמר מכווץ – נפרס בחזרה לקובץ המקורי
   const ascii = d.original_name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   res.writeHead(200, {
-    'Content-Type': d.mime, 'Content-Length': fs.statSync(file).size,
+    'Content-Type': d.mime, 'Content-Length': buf.length,
     'Content-Disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(d.original_name)}`,
     'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'private, no-store',
   });
-  fs.createReadStream(file).pipe(res);
+  res.end(buf);
   audit(req, 'file_downloaded', { id: d.id });
 });
 // צפייה בקובץ בלי להוריד: רק סוגים שהדפדפן מציג בבטחה (PDF, תמונות, טקסט). SVG/HTML לא מוצגים לעולם
@@ -718,15 +736,16 @@ route('GET', '/api/documents/:id/view', async (req, res) => {
   if (!kind) throw new HttpError(415, 'אין תצוגה מקדימה לסוג הקובץ הזה – אפשר להוריד אותו');
   const file = up.storedPath(d.stored_name);
   if (!(await cloud.ensureLocal('uploads/' + d.stored_name, file))) throw new HttpError(404, 'הקובץ לא נמצא באחסון');
+  const buf = up.readStored(d.stored_name);
   const ascii = d.original_name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   res.writeHead(200, {
-    'Content-Type': kind === 'text' ? mime + '; charset=utf-8' : mime, 'Content-Length': fs.statSync(file).size,
+    'Content-Type': kind === 'text' ? mime + '; charset=utf-8' : mime, 'Content-Length': buf.length,
     'Content-Disposition': `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(d.original_name)}`,
     // מוצג רק בתוך המערכת; תמונות וטקסט גם בארגז חול. PDF בלי ארגז חול, כי אחרת הדפדפן לא מציג אותו
     'Content-Security-Policy': kind === 'pdf' ? "frame-ancestors 'self'; script-src 'none'; object-src 'self'" : "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'; sandbox",
     'X-Frame-Options': 'SAMEORIGIN', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
   });
-  fs.createReadStream(file).pipe(res);
+  res.end(buf);
   audit(req, 'file_viewed', { id: d.id });
 });
 // Word / Excel: תצוגת טקסט וטבלאות (מבנה נתונים, הדפדפן מציג אותו כטקסט בלבד)
@@ -738,7 +757,7 @@ route('GET', '/api/documents/:id/preview', async (req) => {
   const file = up.storedPath(d.stored_name);
   if (!(await cloud.ensureLocal('uploads/' + d.stored_name, file))) throw new HttpError(404, 'הקובץ לא נמצא באחסון');
   let out;
-  try { out = filePreview(ext, fs.readFileSync(file)); } catch (e) { throw new HttpError(422, 'לא ניתן להציג את הקובץ: ' + e.message); }
+  try { out = filePreview(ext, up.readStored(d.stored_name)); } catch (e) { throw new HttpError(422, 'לא ניתן להציג את הקובץ: ' + e.message); }
   audit(req, 'file_viewed', { id: d.id });
   return out;
 });
@@ -1363,14 +1382,30 @@ route('POST', '/api/public/apply', async (req, res) => {
   if (f.website) { audit(req, 'apply_honeypot', {}, 'warning'); return status(400, { error: 'הבקשה לא תקינה' }); } // שדה מלכודת לבוטים
   // ---- אימות שדות (בשרת – מחייב) ----
   const kind = v.oneOf(f.kind, Object.keys(KINDS), { required: true, name: 'סוג מגיש' });
-  const username = v.str(normUser(f.username), { required: true, max: 60, name: 'שם משתמש', pattern: USERNAME_RE });
-  const probs = sec.passwordProblems(f.password, username);
-  if (probs.length) throw new sec.ValidationError('סיסמה חלשה: ' + probs.join(', '));
+  // "יש לי כבר משתמש במערכת": שם המשתמש והסיסמה הם התחברות למשתמש הקיים – לא נפתח משתמש חדש
+  const existing = f.existing === '1';
+  let username, existingUser = null;
+  if (existing) {
+    username = normUser(v.str(f.username, { required: true, max: 60, name: 'שם משתמש' }));
+    const pw = typeof f.password === 'string' ? f.password.slice(0, 256) : '';
+    if (!pw) throw new sec.ValidationError('סיסמה: שדה חובה');
+    const chk = await checkCredentials(req, res, username, pw);
+    if (!chk.user) return chk;
+    existingUser = db.prepare('SELECT u.*, r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?').get(chk.user.id);
+    // משתמשי צוות (בעלי הרשאה) לא מגישים בקשות מהטופס הציבורי
+    if (!isPublicUser(existingUser)) { audit(req, 'apply_staff_user', { username }, 'warning'); throw new sec.ValidationError('המשתמש הזה הוא משתמש צוות. הגשה מהאתר מיועדת לתושבים וליזמים – היכנסו למערכת כרגיל.'); }
+    if (existingUser.must_change_pw) throw new sec.ValidationError('יש להחליף את הסיסמה של המשתמש לפני הגשת בקשה. היכנסו למערכת עם המשתמש, החליפו סיסמה, ואז הגישו את הבקשה.');
+  } else {
+    username = v.str(normUser(f.username), { required: true, max: 60, name: 'שם משתמש', pattern: USERNAME_RE });
+    const probs = sec.passwordProblems(f.password, username);
+    if (probs.length) throw new sec.ValidationError('סיסמה חלשה: ' + probs.join(', '));
+  }
   const type = typesAll().find(t => t.key === f.type && t.active && t.public);
   if (!type) throw new sec.ValidationError('סוג בקשה: יש לבחור מהרשימה');
-  const email = v.str(f.email, { required: true, max: 200, name: 'אימייל', pattern: v.EMAIL });
-  const address = v.str(f.address, { required: true, max: 300, name: 'כתובת מגורים' });
-  const phone = phoneField(f.phone, 'פלאפון');
+  // עם משתמש קיים: פרטי הקשר נלקחים מהמשתמש (אם לא מולאו מחדש)
+  const email = existingUser && !f.email ? (existingUser.email || '') : v.str(f.email, { required: true, max: 200, name: 'אימייל', pattern: v.EMAIL });
+  const address = existingUser && !f.address ? (existingUser.address || '') : v.str(f.address, { required: true, max: 300, name: 'כתובת מגורים' });
+  const phone = existingUser && !f.phone ? (existingUser.phone || '') : phoneField(f.phone, 'פלאפון');
   const project = v.str(f.project, { required: true, max: 200, name: 'פרויקט' });
   const loc = locationField(f.location);
   const police = policeFields(f.police);
@@ -1380,9 +1415,9 @@ route('POST', '/api/public/apply', async (req, res) => {
   let routeChk, workChk;
   try { routeChk = up.checkFile(routeFile.filename, routeFile.data, ROUTE_EXT, 'תוכנית תוואי'); workChk = up.checkFile(workFile.filename, workFile.data, WORKREQ_EXT, 'בקשת עבודה'); }
   catch (e) { audit(req, 'upload_rejected', { reason: e.message }, 'warning'); throw e; }
-  if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new sec.ValidationError('שם המשתמש תפוס. בחרו שם אחר, או היכנסו עם המשתמש הקיים.');
-  const roleId = publicRole(type, kind);
-  const hash = await sec.hashPassword(f.password);
+  if (!existingUser && db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new sec.ValidationError('שם המשתמש תפוס. אם זה המשתמש שלכם – סמנו "יש לי כבר שם משתמש וסיסמה במערכת". אחרת בחרו שם אחר.');
+  const roleId = existingUser ? existingUser.role_id : publicRole(type, kind);
+  const hash = existingUser ? null : await sec.hashPassword(f.password);
   // ---- קבצים לדיסק ----
   const stored = [];
   const keep = (buf) => { const st = up.storeBuffer(buf); stored.push(st.stored); return st; };
@@ -1393,9 +1428,10 @@ route('POST', '/api/public/apply', async (req, res) => {
     const handlers = [];
     const chain = typeChain(type.key); // גורמי התשתית הקבועים של הסוג נכנסים לבקשה אוטומטית
     created = tx(() => {
-      const u = db.prepare(`INSERT INTO users (username, full_name, email, phone, address, password_hash, role_id, applicant_kind, must_change_pw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
-        .run(username, police.applicant_name, email, phone, address, hash, roleId, kind);
-      const userId = Number(u.lastInsertRowid);
+      const userId = existingUser ? existingUser.id : Number(db.prepare(`INSERT INTO users (username, full_name, email, phone, address, password_hash, role_id, applicant_kind, must_change_pw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+        .run(username, police.applicant_name, email, phone, address, hash, roleId, kind).lastInsertRowid);
+      // משתמש קיים: מעדכנים פרטי קשר שמולאו מחדש בטופס
+      if (existingUser) db.prepare('UPDATE users SET email = ?, phone = ?, address = ?, applicant_kind = COALESCE(applicant_kind, ?) WHERE id = ?').run(email || null, phone || null, address || null, kind, existingUser.id);
       const number = nextRequestNumber();
       const title = `${type.name} – ${project}`.slice(0, 200);
       const rq = db.prepare(`INSERT INTO requests (number, type, title, description, project_name, address, loc_x, loc_y, loc_z, loc_label, work_time, work_hours, applicant_id, assignee_id, status, track, track_status, applicant_kind, planned_start, submitted_at, due_at)
@@ -1420,7 +1456,7 @@ route('POST', '/api/public/apply', async (req, res) => {
   } catch (e) { for (const n of stored) fs.rm(up.storedPath(n), { force: true }, () => {}); throw e; }
   // ענן (אם הוגדר)
   for (const [n, buf, t] of [[created.stRoute, routeFile.data, routeChk.mime], [created.stWork, workFile.data, workChk.mime], [created.stPol, created.pdf, 'application/pdf']]) {
-    try { await cloud.putFile('uploads/' + n, buf, t); } catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); }
+    try { await cloud.putFile('uploads/' + n, up.rawStored(n), t); } catch (e) { audit(req, 'cloud_upload_failed', { error: e.message }, 'error'); }
   }
   // התראה + דוא"ל לאחראי מיפוי ולמנהלי המערכת, ולמטפלים שהוגדרו לסוג הבקשה
   const link = `#/requests/${created.requestId}`;
@@ -1430,10 +1466,11 @@ route('POST', '/api/public/apply', async (req, res) => {
   const text = `בקשה חדשה ${created.number} הוגשה מהאתר (${KINDS[kind]}): ${type.name} – ${project}. יש להזין את גורמי התשתית הרלוונטיים.`;
   for (const u of all) notify(u.id, text, link);
   mailUsers(all, `בקשה חדשה ${created.number} – ${type.name}`, `שלום,\n\n${text}\nמגיש/ה: ${police.applicant_name}, ${phone}, ${email}\n\nלמיפוי הבקשה: ${linkTo(created.requestId)}\n\n${sysTitle()}`);
-  mailUsers([{ email }], `בקשה ${created.number} התקבלה – ${sysTitle()}`, `שלום ${police.applicant_name},\n\nבקשתך התקבלה ומספרה ${created.number}. הבקשה עוברת להמשך טיפול.\nאפשר לעקוב אחריה במערכת עם שם המשתמש ${username}: ${config.publicUrl}\n\n${getSetting('org.name')}`);
+  if (email) mailUsers([{ email }], `בקשה ${created.number} התקבלה – ${sysTitle()}`, `שלום ${police.applicant_name},\n\nבקשתך התקבלה ומספרה ${created.number}. הבקשה עוברת להמשך טיפול.\nאפשר לעקוב אחריה במערכת עם שם המשתמש ${username}: ${config.publicUrl}\n\n${getSetting('org.name')}`);
   req.user = { id: created.userId, username };
-  audit(req, 'public_apply', { request: created.requestId, number: created.number, kind, type: type.key }, 'notice');
+  audit(req, 'public_apply', { request: created.requestId, number: created.number, kind, type: type.key, existing_user: !!existingUser }, 'notice');
   // כניסה אוטומטית כדי לעקוב אחרי הבקשה
+  auth.destroySession(req, res);
   const csrf = auth.createSession(res, created.userId, req, false);
   return status(201, { ok: true, number: created.number, id: created.requestId, csrf });
 });

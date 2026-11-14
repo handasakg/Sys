@@ -337,7 +337,7 @@
     const m = modal(f.original_name, body, actions);
     m.dlg.classList.add('viewer-dlg');
     const fail = (msg) => body.replaceChildren(h('div', { class: 'viewer-empty' }, icon('file'), h('p', null, msg), h('a', { class: 'btn primary', href: `/api/documents/${f.id}/download` }, icon('download'), 'הורדת הקובץ')));
-    if (kind === 'pdf') body.append(h('iframe', { class: 'viewer-frame', src: url, title: `תצוגת ${f.original_name}` }));
+    if (kind === 'pdf') pdfView(body, url, f.original_name, m);
     else if (kind === 'image') body.append(h('div', { class: 'viewer-img' }, h('img', { src: url, alt: f.original_name, onerror: () => fail('לא ניתן להציג את התמונה.') })));
     else if (kind === 'text') {
       body.append(h('p', { class: 'muted', role: 'status' }, 'טוען…'));
@@ -347,6 +347,93 @@
       api('GET', `/api/documents/${f.id}/preview`).then(p => body.replaceChildren(officeView(p))).catch(ex => fail(ex.message || 'לא ניתן להציג את הקובץ.'));
     } else fail(`אין תצוגה מקדימה לקובץ מסוג ${extOf(f.original_name).toUpperCase() || 'זה'} בדפדפן. אפשר להוריד אותו ולפתוח בתוכנה המתאימה.`);
     return m;
+  }
+  // PDF: מוצג בתוך המערכת עם pdf.js – עובד בכל דפדפן, גם בנייד (אנדרואיד ואייפון), וגם כשהדפדפן מוגדר להוריד PDF במקום להציג.
+  // אם pdf.js לא נטען – חוזרים לתצוגה המובנית של הדפדפן
+  const PDFJS_URL = '/pdfjs.mjs';
+  let pdfjsLib = null;
+  async function loadPdfjs() {
+    if (!pdfjsLib) {
+      const lib = await import(PDFJS_URL);
+      lib.GlobalWorkerOptions.workerSrc = '/pdfjs-worker.mjs';
+      pdfjsLib = lib;
+    }
+    return pdfjsLib;
+  }
+  function pdfView(body, url, name, m) {
+    const status = h('p', { class: 'muted', role: 'status' }, 'טוען את המסמך…');
+    body.replaceChildren(status);
+    let doc = null, zoom = 1, closed = false, obs = null;
+    const pagesBox = h('div', { class: 'pdf-pages', tabindex: '0', 'aria-label': `תצוגת ${name}` });
+    const counter = h('span', { class: 'pdf-count', 'aria-live': 'polite' });
+    const zoomLbl = h('span', { class: 'pdf-zoom num' }, '100%');
+    const nativeView = () => body.replaceChildren(h('iframe', { class: 'viewer-frame', src: url, title: `תצוגת ${name}` }));
+    m.dlg.addEventListener('close', () => { closed = true; if (obs) obs.disconnect(); if (doc) doc.destroy(); });
+    const setZoom = (z) => { zoom = Math.min(3, Math.max(0.5, Math.round(z * 4) / 4)); zoomLbl.textContent = Math.round(zoom * 100) + '%'; layout(); };
+    const bar = h('div', { class: 'pdf-bar', role: 'toolbar', 'aria-label': 'שליטה בתצוגה' },
+      h('button', { class: 'btn sm', type: 'button', 'aria-label': 'הקטנה', onclick: () => setZoom(zoom - 0.25) }, '−'), zoomLbl,
+      h('button', { class: 'btn sm', type: 'button', 'aria-label': 'הגדלה', onclick: () => setZoom(zoom + 0.25) }, '+'),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => setZoom(1) }, 'התאמה לרוחב'), counter);
+    const slots = [];
+    function layout() {
+      // רוחב העמוד = רוחב החלון × זום. הציור עצמו מתבצע רק לעמודים שנראים במסך
+      const avail = Math.max(200, pagesBox.clientWidth - 24);
+      for (const sl of slots) {
+        const w = Math.round(avail * zoom), hgt = Math.round(w * sl.ratio);
+        sl.el.style.setProperty('width', w + 'px'); sl.el.style.setProperty('height', hgt + 'px');
+        if (sl.w !== w) { sl.w = w; sl.done = false; if (sl.visible) draw(sl); }
+      }
+    }
+    async function draw(sl) {
+      if (sl.busy || sl.done || closed) return;
+      sl.busy = true;
+      try {
+        const page = await doc.getPage(sl.n);
+        const base = page.getViewport({ scale: 1 });
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        // הגבלת גודל הציור (זיכרון בטלפון)
+        const scale = Math.min((sl.w / base.width) * dpr, 4096 / Math.max(base.width, base.height) * 1.5);
+        const vp = page.getViewport({ scale });
+        const cv = document.createElement('canvas'); cv.width = Math.floor(vp.width); cv.height = Math.floor(vp.height);
+        cv.setAttribute('aria-hidden', 'true');
+        await page.render({ canvasContext: cv.getContext('2d'), viewport: vp, canvas: cv }).promise;
+        if (!closed) { sl.el.replaceChildren(cv); sl.done = true; }
+      } catch (e) { sl.el.replaceChildren(h('span', { class: 'muted small' }, 'לא ניתן להציג עמוד זה')); }
+      finally { sl.busy = false; }
+    }
+    (async () => {
+      try {
+        const lib = await loadPdfjs();
+        const res = await fetch(url, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('http ' + res.status);
+        const data = new Uint8Array(await res.arrayBuffer());
+        doc = await lib.getDocument({ data, isEvalSupported: false, useSystemFonts: true }).promise;
+        if (closed) { doc.destroy(); return; }
+        const total = doc.numPages;
+        counter.textContent = `${total} ${total === 1 ? 'עמוד' : 'עמודים'}`;
+        const first = (await doc.getPage(1)).getViewport({ scale: 1 });
+        for (let n = 1; n <= Math.min(total, 500); n++) {
+          const el = h('div', { class: 'pdf-page', role: 'img', 'aria-label': `עמוד ${n} מתוך ${total}` }, h('span', { class: 'muted small' }, `עמוד ${n}`));
+          slots.push({ n, el, ratio: first.height / first.width, w: 0, done: false, visible: false, busy: false });
+        }
+        pagesBox.append(...slots.map(sl => sl.el));
+        body.replaceChildren(bar, pagesBox);
+        // יחס הגובה של כל עמוד (עמודים בגדלים שונים)
+        layout();
+        obs = new IntersectionObserver((ents) => {
+          for (const en of ents) { const sl = slots.find(x => x.el === en.target); if (!sl) continue; sl.visible = en.isIntersecting; if (en.isIntersecting) draw(sl); }
+        }, { root: pagesBox, rootMargin: '600px 0px' });
+        for (const sl of slots) obs.observe(sl.el);
+        new ResizeObserver(() => layout()).observe(pagesBox);
+        for (const sl of slots.slice(1, 40)) doc.getPage(sl.n).then(p => { const v = p.getViewport({ scale: 1 }); const r = v.height / v.width; if (Math.abs(r - sl.ratio) > 0.01) { sl.ratio = r; sl.w = 0; layout(); } }).catch(() => {});
+        if (total > 500) pagesBox.append(h('p', { class: 'muted' }, 'מוצגים 500 העמודים הראשונים. להצגה מלאה הורידו את הקובץ.'));
+      } catch (e) {
+        if (closed) return;
+        console.warn('[pdf.js]', e && (e.message || e));
+        if (e && e.name === 'PasswordException') { body.replaceChildren(h('div', { class: 'viewer-empty' }, icon('lock'), h('p', null, 'הקובץ מוגן בסיסמה. אפשר להוריד אותו ולפתוח בתוכנה המתאימה.'))); return; }
+        nativeView();
+      }
+    })();
   }
   // Word: פסקאות וטבלאות; Excel: גיליון בכל לשונית. הכל כטקסט בלבד
   function officeView(p) {
@@ -417,7 +504,7 @@
     return m;
   }
 
-  async function renderApply(kind) {
+  async function renderApply(kind, existingPre = false, presetUser = '') {
     if (!['resident', 'entrepreneur'].includes(kind)) { location.hash = '#/'; return; }
     const KIND = { resident: 'תושב/ת', entrepreneur: 'יזם' };
     document.title = `הגשת בקשה – ${KIND[kind]} – ${S.title}`;
@@ -463,21 +550,46 @@
     const polBtn = h('button', { class: 'police-card', type: 'button', 'aria-describedby': 'pol-desc', onclick: () => policeDialog() },
       h('span', { class: 'pol-badge', 'aria-hidden': 'true' }, icon('shield')),
       h('span', { class: 'pol-text' }, h('span', { class: 'pol-title' }, 'משטרה', h('span', { class: 'pol-req' }, 'חובה')), h('span', { class: 'pol-desc', id: 'pol-desc' }, 'טופס פרטי העבודה לתיאום מול המשטרה')), polStatus);
+    // "יש לי כבר שם משתמש וסיסמה במערכת" – אז שם המשתמש והסיסמה הם התחברות למשתמש הקיים, ולא נפתח משתמש חדש
+    const USER_PATTERN = '[A-Za-z0-9\u05D0-\u05EA][A-Za-z0-9\u05D0-\u05EA._ \-]{1,58}[A-Za-z0-9\u05D0-\u05EA]';
+    const userIn = inp('username', { maxlength: 60, autocomplete: 'username', pattern: USER_PATTERN });
+    const pwIn = inp('password', { type: 'password', minlength: 12, maxlength: 128, autocomplete: 'new-password', dir: 'ltr' });
+    const userField = field('שם משתמש', userIn, { required: true, hint: 'אפשר בעברית, למשל: ישראל כהן' });
+    const pwField = field('סיסמה', pwIn, { required: true, hint: 'לפחות 12 תווים, אותיות וספרות.' });
+    const userLegend = h('legend', null, 'משתמש לכניסה למערכת');
+    const headNote = h('p', { class: 'muted' });
+    const existingChk = h('label', { class: 'check existing-chk' }, h('input', { type: 'checkbox', name: 'existing', checked: existingPre }),
+      h('span', null, h('strong', null, 'יש לי כבר שם משתמש וסיסמה במערכת'),
+        h('span', { class: 'small muted', style: { display: 'block' } }, 'למשל אם הגשתם בעבר בקשה. הבקשה החדשה תצורף למשתמש הקיים, בלי לפתוח משתמש חדש.')));
+    let contactFields = [];
+    function setExisting(on) {
+      userLegend.textContent = on ? 'כניסה עם המשתמש הקיים' : 'משתמש לכניסה למערכת';
+      headNote.textContent = on ? 'כל השדות חובה. הזינו את שם המשתמש והסיסמה שכבר יש לכם במערכת – הבקשה תצורף אליהם, ופרטי הקשר יילקחו מהמשתמש.'
+        : 'כל השדות חובה. אחרי ההגשה ייפתח לכם משתמש, ותוכלו לעקוב אחרי הבקשה עם שם המשתמש והסיסמה.';
+      if (on) { userIn.removeAttribute('pattern'); pwIn.removeAttribute('minlength'); pwIn.autocomplete = 'current-password'; }
+      else { userIn.setAttribute('pattern', USER_PATTERN); pwIn.setAttribute('minlength', '12'); pwIn.autocomplete = 'new-password'; }
+      userField.querySelector('.hint').textContent = on ? 'שם המשתמש שאיתו אתם נכנסים למערכת.' : 'אפשר בעברית, למשל: ישראל כהן';
+      pwField.querySelector('.hint').textContent = on ? 'הסיסמה הנוכחית שלכם.' : 'לפחות 12 תווים, אותיות וספרות.';
+      // פרטי הקשר (אימייל, פלאפון, כתובת) כבר שמורים במשתמש – לא צריך למלא שוב
+      for (const fEl of contactFields) { fEl.hidden = on; const i = fEl.querySelector('input'); i.disabled = on; if (on) i.removeAttribute('aria-invalid'); }
+      err.hidden = true;
+    }
+    existingChk.querySelector('input').addEventListener('change', (e) => setExisting(e.target.checked));
+    const emailField = field('אימייל', inp('email', { type: 'email', maxlength: 200, autocomplete: 'email', dir: 'ltr' }), { required: true, hint: 'לכאן יישלחו עדכונים ומסמך האישור.' });
+    const phoneFieldEl = field('פלאפון', inp('phone', { type: 'tel', maxlength: 20, autocomplete: 'tel', dir: 'ltr', inputmode: 'tel' }), { required: true });
+    const addrField = kind === 'entrepreneur'
+      ? field('כתובת', inp('address', { maxlength: 300, autocomplete: 'street-address' }), { required: true, hint: 'כתובת החברה או המשרד.' })
+      : field('כתובת מגורים', inp('address', { maxlength: 300, autocomplete: 'street-address' }), { required: true });
+    contactFields = [emailField, phoneFieldEl, addrField];
     const form = h('form', { class: 'apply-form', novalidate: true },
       h('div', { class: 'apply-head' }, h('span', { class: 'chip fast plain' }, KIND[kind]), h('h2', null, 'הגשת בקשה לתיאום הנדסי'),
-        h('p', { class: 'muted' }, 'כל השדות חובה. אחרי ההגשה ייפתח לכם משתמש, ותוכלו לעקוב אחרי הבקשה עם שם המשתמש והסיסמה.')), err,
-      h('fieldset', null, h('legend', null, 'משתמש לכניסה למערכת'), h('div', { class: 'row' },
-        field('שם משתמש', inp('username', { maxlength: 60, autocomplete: 'username', pattern: '[A-Za-z0-9\u05D0-\u05EA][A-Za-z0-9\u05D0-\u05EA._ \-]{1,58}[A-Za-z0-9\u05D0-\u05EA]' }), { required: true, hint: 'אפשר בעברית, למשל: ישראל כהן' }),
-        field('סיסמה', inp('password', { type: 'password', minlength: 12, maxlength: 128, autocomplete: 'new-password', dir: 'ltr' }), { required: true, hint: 'לפחות 12 תווים, אותיות וספרות.' }))),
+        headNote), err,
+      h('div', { class: 'existing-box' }, existingChk),
+      h('fieldset', null, userLegend, h('div', { class: 'row' }, userField, pwField)),
       h('fieldset', null, h('legend', null, 'פרטי הבקשה'),
         field('סוג בקשה', typeSel, { required: true }), typeHint,
-        h('div', { class: 'row' },
-          field('אימייל', inp('email', { type: 'email', maxlength: 200, autocomplete: 'email', dir: 'ltr' }), { required: true, hint: 'לכאן יישלחו עדכונים ומסמך האישור.' }),
-          field('פלאפון', inp('phone', { type: 'tel', maxlength: 20, autocomplete: 'tel', dir: 'ltr', inputmode: 'tel' }), { required: true })),
-        h('div', { class: 'row' },
-          kind === 'entrepreneur'
-            ? field('כתובת', inp('address', { maxlength: 300, autocomplete: 'street-address' }), { required: true, hint: 'כתובת החברה או המשרד.' })
-            : field('כתובת מגורים', inp('address', { maxlength: 300, autocomplete: 'street-address' }), { required: true }),
+        h('div', { class: 'row' }, emailField, phoneFieldEl),
+        h('div', { class: 'row' }, addrField,
           field('פרויקט', inp('project', { maxlength: 200 }), { required: true, hint: 'שם הפרויקט או תיאור קצר של העבודה.' })),
         h('div', { class: 'field' }, h('span', { class: 'lbl', id: 'loc-lbl' }, 'מיקום', h('span', { class: 'req-mark', 'aria-hidden': 'true' }, ' *'), h('span', { class: 'sr-only' }, ' (חובה)')), locBtn)),
       h('fieldset', null, h('legend', null, 'מסמכים'),
@@ -525,13 +637,15 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!validate(form, err)) return;
-      if (!phoneOk(form.phone.value)) { form.phone.setAttribute('aria-invalid', 'true'); form.phone.focus(); return showErr(err, 'מספר הפלאפון אינו תקין.'); }
+      if (!form.phone.disabled && !phoneOk(form.phone.value)) { form.phone.setAttribute('aria-invalid', 'true'); form.phone.focus(); return showErr(err, 'מספר הפלאפון אינו תקין.'); }
       for (const n of ['route_plan', 'work_request']) if (!form[n].files[0]) { form.querySelector(`#f-${n}`).closest('.file-card').classList.add('bad'); form.querySelector(`label[for="f-${n}"]`).focus(); return showErr(err, `יש לצרף ${n === 'route_plan' ? 'תוכנית תוואי' : 'בקשת עבודה'}.`); }
       if (!loc) { locBtn.classList.add('bad'); locBtn.focus(); return showErr(err, 'יש לסמן את מיקום העבודה במפה.'); }
       if (!police) { polBtn.classList.add('bad'); polBtn.focus(); return showErr(err, 'יש למלא את טופס המשטרה.'); }
       const fd = new FormData();
       fd.append('kind', kind);
-      for (const n of ['username', 'password', 'type', 'email', 'phone', 'address', 'project', 'website']) fd.append(n, form[n].value);
+      const existing = form.existing.checked;
+      if (existing) fd.append('existing', '1');
+      for (const n of ['username', 'password', 'type', 'email', 'phone', 'address', 'project', 'website']) if (!(existing && ['email', 'phone', 'address'].includes(n))) fd.append(n, form[n].value);
       fd.append('police', JSON.stringify(police));
       fd.append('location', JSON.stringify(loc));
       fd.append('route_plan', form.route_plan.files[0]); fd.append('work_request', form.work_request.files[0]);
@@ -545,6 +659,8 @@
           [h('button', { class: 'btn primary', type: 'button', onclick: async () => { done.close(); location.hash = `#/requests/${r.id}`; await boot(); } }, 'מעבר לבקשה')]);
       } catch (ex) { showErr(err, ex.message); err.scrollIntoView({ block: 'center' }); }
     });
+    setExisting(existingPre);
+    if (presetUser) userIn.value = presetUser;
     authShell([form, authLinks()], { wide: true });
   }
 
@@ -623,6 +739,39 @@
   }
 
   // ---------- מעטפת האפליקציה ----------
+  // הלשוניות של לוח הבקרה לניהול (כל לשונית מוצגת רק למי שיש לו הרשאה אליה)
+  const ADMIN_TABS = [
+    ['users', 'משתמשים', 'users', ['admin.users']],
+    ['roles', 'תפקידים והרשאות', 'key', ['admin.roles']],
+    ['types', 'סוגי בקשות', 'layers', ['admin.settings']],
+    ['settings', 'הגדרות וקבצים', 'sliders', ['admin.settings']],
+    ['audit', 'יומן אבטחה', 'shield', ['admin.audit']],
+    ['backups', 'גיבויים', 'db', ['admin.backup']]];
+  const adminTabs = () => ADMIN_TABS.filter(t => t[3].some(can));
+  const ADMIN_VIEWS = { users: viewAdminUsers, roles: viewAdminRoles, types: viewAdminTypes, settings: viewAdminSettings, audit: viewAdminAudit, backups: viewAdminBackups };
+  // עוטף מסך ניהול: שורת לשוניות (קישורים) מעל, והמסך עצמו מתחת
+  function adminPage(key0, view0) {
+    return async (main, q, id, path) => {
+      const tabs = adminTabs();
+      let key = key0, view = view0;
+      if (!tabs.length) { location.hash = '#/'; return; }
+      // כניסה ל"לוח בקרה לניהול" עצמו (או ללשונית בלי הרשאה) – פותחים את הלשונית הראשונה המותרת
+      if (!tabs.some(t => t[0] === key)) {
+        key = tabs[0][0]; view = ADMIN_VIEWS[key];
+        try { history.replaceState(null, '', '#/admin/' + key); } catch { /* */ }
+      }
+      const strip = h('nav', { class: 'admin-tabs', 'aria-label': 'לוח בקרה לניהול' },
+        h('span', { class: 'admin-tabs-title' }, icon('sliders'), 'לוח בקרה לניהול'),
+        h('div', { class: 'admin-tabs-row' }, tabs.map(([k, label, ic]) => h('a', { href: '#/admin/' + k, class: 'admin-tab', ...(k === key ? { 'aria-current': 'page' } : {}) }, icon(ic), h('span', null, label)))));
+      const body = safeHost(h('div', { class: 'admin-body' }, h('p', { class: 'muted', role: 'status' }, 'טוען…')));
+      main.replaceChildren(strip, body);
+      // בנייד: גוללים את שורת הלשוניות כך שהלשונית הפעילה תיראה
+      const row = strip.querySelector('.admin-tabs-row'), cur = strip.querySelector('[aria-current]');
+      const rr = row.getBoundingClientRect(), cr = cur.getBoundingClientRect();
+      if (cr.left < rr.left) row.scrollLeft -= rr.left - cr.left + 8; else if (cr.right > rr.right) row.scrollLeft += cr.right - rr.right + 8;
+      await view(body, q, id, path);
+    };
+  }
   const NAV = [
     { g: null, items: [['#/', 'דף הבית', 'home', null]] },
     { g: 'בקשות תיאום', items: [
@@ -632,14 +781,9 @@
     { g: 'ניהול עבודה', hide: 'public', items: [
       ['#/tasks', 'משימות', 'task', ['tasks.view']],
       ['#/reports', 'דוחות וגרפים', 'chart', null],
-      ['#/documents', 'מסמכים', 'folder', null, null, [['#/documents?tab=open', 'בקשות פתוחות'], ['#/documents?tab=done', 'בקשות שטופלו']]]] },
-    { g: 'ניהול מערכת', items: [
-      ['#/admin/users', 'משתמשים', 'users', ['admin.users']],
-      ['#/admin/roles', 'תפקידים והרשאות', 'key', ['admin.roles']],
-      ['#/admin/types', 'סוגי בקשות', 'layers', ['admin.settings']],
-      ['#/admin/settings', 'הגדרות וקבצים', 'sliders', ['admin.settings']],
-      ['#/admin/audit', 'יומן אבטחה', 'shield', ['admin.audit']],
-      ['#/admin/backups', 'גיבויים', 'db', ['admin.backup']]] },
+      ['#/documents', 'מסמכים', 'folder', null]] },
+    // לוח בקרה לניהול: פריט אחד בתפריט, ובתוכו המסכים כלשוניות
+    { g: 'ניהול', items: [['#/admin', 'לוח בקרה לניהול', 'sliders', ADMIN_TABS.flatMap(t => t[3])]] },
     { g: 'אישי', items: [['#/appearance', 'עיצוב ותצוגה', 'palette', null], ['#/account', 'החשבון שלי', 'user', null]] },
   ];
   // מגישים מהציבור (תושב/ת, יזם) ומנהל המערכת רואים תפריט מצומצם
@@ -661,6 +805,11 @@
     if ('ResizeObserver' in window) new ResizeObserver(() => fit()).observe(input);
     requestAnimationFrame(fit); setTimeout(fit, 300);
     return fit;
+  }
+  // אזור תוכן שמתעלם מחלקים ריקים (null) – כדי שלא יוצג הטקסט "null" במסך
+  function safeHost(el) {
+    el.replaceChildren = (...kids) => Element.prototype.replaceChildren.call(el, ...kids.flat(Infinity).filter(k => k !== null && k !== undefined && k !== false));
+    return el;
   }
   let shell = null;
   function renderShell() {
@@ -702,7 +851,7 @@
         gsearch),
       h('div', { class: 'spacer' }), clockEl(), installButton(true), bell, userCard(),
       h('button', { class: 'btn ghost icon-btn', type: 'button', 'aria-label': 'יציאה מהמערכת', title: 'יציאה', onclick: logout }, icon('out')));
-    const main = h('main', { class: 'content', id: 'main', tabindex: '-1' });
+    const main = safeHost(h('main', { class: 'content', id: 'main', tabindex: '-1' }));
     const footer = h('footer', { class: 'footer' }, h('span', null, `© ${new Date().getFullYear()} ${S.org}`),
       h('a', { href: '/accessibility.html' }, 'הצהרת נגישות'), h('a', { href: '/privacy.html' }, 'מדיניות פרטיות'));
     root.replaceChildren(h('div', { class: 'app' }, sidebar, h('div', { class: 'main' }, top, main, footer)));
@@ -773,13 +922,21 @@
     [/^\/$/, viewDashboard], [/^\/requests$/, viewRequests], [/^\/requests\/(\d+)$/, viewRequest],
     [/^\/requests\/(\d+)\/edit$/, viewRequestForm], [/^\/tasks$/, viewTasks],
     [/^\/reports$/, viewReports], [/^\/documents$/, viewDocuments], [/^\/appearance$/, viewAppearance],
-    [/^\/account$/, viewAccount], [/^\/admin\/users$/, viewAdminUsers], [/^\/admin\/roles$/, viewAdminRoles], [/^\/admin\/settings$/, viewAdminSettings], [/^\/admin\/types$/, viewAdminTypes],
-    [/^\/admin\/audit$/, viewAdminAudit], [/^\/admin\/backups$/, viewAdminBackups],
+    [/^\/account$/, viewAccount], [/^\/admin\/?$/, adminPage('', null)],
+    [/^\/admin\/users$/, adminPage('users', viewAdminUsers)], [/^\/admin\/roles$/, adminPage('roles', viewAdminRoles)], [/^\/admin\/settings$/, adminPage('settings', viewAdminSettings)], [/^\/admin\/types$/, adminPage('types', viewAdminTypes)],
+    [/^\/admin\/audit$/, adminPage('audit', viewAdminAudit)], [/^\/admin\/backups$/, adminPage('backups', viewAdminBackups)],
   ];
   async function route() {
     const { path, q } = parseHash();
     if (path === '/reset') return renderReset(q.token || '');
-    if (!S.me) return path === '/forgot' ? renderForgot() : path === '/apply' ? renderApply(q.kind) : renderLogin();
+    // תושב/ת או יזם מחובר שלוחץ על "הגשת בקשה חדשה": יוצאים מהחשבון ופותחים את טופס ההגשה עם המשתמש הקיים (שם המשתמש כבר ממולא)
+    if (S.me && path === '/apply' && isPublicUser()) {
+      const kind0 = ['resident', 'entrepreneur'].includes(q.kind) ? q.kind : S.me.applicant_kind; const uname = S.me.username;
+      try { await api('POST', '/api/auth/logout', {}); } catch { /* ממשיכים */ }
+      S.me = null; S.csrf = null; S.perms = new Set(); shell = null;
+      return renderApply(kind0, true, uname);
+    }
+    if (!S.me) return path === '/forgot' ? renderForgot() : path === '/apply' ? renderApply(q.kind, q.existing === '1') : renderLogin();
     if (S.me.must_change_pw) return renderMustChange();
     if (!shell || !document.body.contains(shell.main)) renderShell();
     toggleSidebar(false);
@@ -1315,6 +1472,15 @@
       h('div', null, h('h2', { id: 'ok-h' }, 'אישור לביצוע עבודה'), h('p', { class: 'small muted' }, `הופק ${fmtDateTime(d.approvalDoc.created_at)} · נשלח גם לאימייל של המגיש`)),
       h('span', { class: 'ok-actions' }, viewBtn(d.approvalDoc, { label: 'צפייה באישור', cls: 'btn' }), h('a', { class: 'btn primary', href: `/api/documents/${d.approvalDoc.id}/download` }, icon('download'), 'הורדת האישור (PDF)'))) : null;
 
+    // בקשה שנדחתה: הסיבה והנחיה להגשת בקשה חדשה
+    const rejH = r.status === 'rejected' ? d.history.find(x => x.action === `סטטוס: ${ST('rejected')}`) : null;
+    const rejNote = r.status === 'rejected' ? h('section', { class: 'panel reject-note', role: 'note', 'aria-labelledby': 'rj-h' },
+      h('span', { class: 'rj-ic', 'aria-hidden': 'true' }, icon('x')),
+      h('div', null, h('h2', { id: 'rj-h' }, 'הבקשה נדחתה'),
+        rejH && rejH.details ? h('p', null, h('strong', null, 'סיבת הדחייה: '), rejH.details) : null,
+        h('p', null, 'לא ניתן להמשיך בטיפול בבקשה זו. יש להגיש בקשה חדשה עם השלמת הפרטים.'),
+        isPublicUser() && r.applicant_id === S.me.id ? h('p', null, h('a', { class: 'btn primary', href: `#/apply?kind=${S.me.applicant_kind}&existing=1` }, icon('send'), 'הגשת בקשה חדשה')) : null)) : null;
+
     // מסמכים
     const docs = docsPanel(d.documents, { request_id: id }, d.can.upload, reload, d.docsOwnOnly);
 
@@ -1332,7 +1498,7 @@
       h('div', { class: 'req-head' }, h('div', { class: 'req-number' }, r.number),
         h('div', null, h('h1', { class: 'req-title' }, r.title), h('div', null, statusChip(r.status), r.overdue ? h('span', { class: 'chip late' }, 'חרגה מזמן הטיפול') : null)),
         h('div', { class: 'actions', style: { display: 'flex', gap: '8px', 'flex-wrap': 'wrap' } }, actions)),
-      h('section', { class: 'panel', 'aria-label': 'שלבי הבקשה' }, routeLine(r)), ...(okDoc ? [okDoc] : []),
+      h('section', { class: 'panel', 'aria-label': 'שלבי הבקשה' }, routeLine(r)), ...(okDoc ? [okDoc] : []), ...(rejNote ? [rejNote] : []),
       h('div', { class: 'grid side' },
         h('div', null, h('section', { class: 'panel' }, h('h2', null, 'פרטי הבקשה'), h('div', { class: 'details-with-map' }, info, locFigure), r.description ? [h('h3', { style: { 'margin-top': '16px' } }, 'תיאור'), h('p', { style: { 'white-space': 'pre-wrap' } }, r.description)] : null), appr, hist),
         h('div', null, docs, d.tasks.length ? h('section', { class: 'panel' }, h('h2', null, 'משימות קשורות'), h('ul', { class: 'files' }, d.tasks.map(t => h('li', null, h('span', { class: 'fname' }, t.title), h('span', { class: 'small muted' }, t.assignee_name || ''), h('span', { class: 'chip plain st-draft' }, t.status))))) : null)));
@@ -1351,15 +1517,16 @@
       h('input', { type: 'checkbox', name: 'auto_approve', checked: true }),
       h('span', null, h('strong', null, 'בלי בדיקה חוזרת'), h('span', { class: 'small muted', style: { display: 'block' } }, 'כשהגורם יתקן ויאשר – הבקשה תאושר אוטומטית ומסמך האישור יישלח למגיש.'))) : null;
     if (autoBox && returnTo) returnTo.addEventListener('change', () => { const v0 = returnTo.querySelector('[name=return_to]:checked').value; autoBox.hidden = v0 === 'applicant'; });
-    const form = h('form', { novalidate: true }, err, h('p', null, `בקשה ${r.number}: ${label}.`), returnTo, autoBox,
-      field(needComment ? (to === 'returned' ? 'סיבת ההחזרה (תישלח באימייל)' : 'נימוק (יוצג למגיש)') : 'הערה (לא חובה)', area('comment', { rows: 3, maxlength: 2000 }), { required: needComment }));
+    const rejectNote = to === 'rejected' ? h('p', { class: 'small muted', style: { margin: '0 0 8px' } }, `${r.applicant_name || 'מגיש הבקשה'} יקבל אימייל עם סיבת הדחייה והנחיה להגיש בקשה חדשה עם השלמת הפרטים.`) : null;
+    const form = h('form', { novalidate: true }, err, h('p', null, `בקשה ${r.number}: ${label}.`), returnTo, autoBox, rejectNote,
+      field(needComment ? (to === 'returned' ? 'סיבת ההחזרה (תישלח באימייל)' : to === 'rejected' ? 'סיבת הדחייה (תישלח באימייל למגיש)' : 'נימוק (יוצג למגיש)') : 'הערה (לא חובה)', area('comment', { rows: 3, maxlength: 2000 }), { required: needComment }));
     const m = modal(label, form, [h('button', { class: 'btn primary', type: 'button', onclick: () => form.requestSubmit() }, label), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'ביטול')]);
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); if (!validate(form, err)) return;
       const rt = form.querySelector('[name=return_to]:checked');
       try {
         const res = await api('POST', `/api/requests/${r.id}/status`, { status: to, comment: formData(form).comment, ...(rt ? { return_to: rt.value } : {}), ...(autoBox ? { auto_approve: form.auto_approve.checked } : {}) });
-        m.close(); toast(res.returned_to ? `הבקשה הוחזרה ל${res.returned_to} – נשלח אימייל עם הסיבה${res.auto_approve ? '. אחרי התיקון היא תאושר אוטומטית' : ''}` : to === 'returned' ? 'הבקשה הוחזרה למגיש – נשלח אימייל עם הסיבה' : `הבקשה עודכנה: ${ST(to)}`); reload();
+        m.close(); toast(res.returned_to ? `הבקשה הוחזרה ל${res.returned_to} – נשלח אימייל עם הסיבה${res.auto_approve ? '. אחרי התיקון היא תאושר אוטומטית' : ''}` : to === 'returned' ? 'הבקשה הוחזרה למגיש – נשלח אימייל עם הסיבה' : to === 'rejected' ? 'הבקשה נדחתה – נשלח אימייל למגיש עם הסיבה והנחיה להגיש בקשה חדשה' : `הבקשה עודכנה: ${ST(to)}`); reload();
       } catch (ex) { showErr(err, ex.message); }
     });
   }
@@ -1504,7 +1671,6 @@
       live.textContent = `${groups.length} תיקיות, ${groups.reduce((a, g) => a + g.docs.length, 0)} מסמכים`;
       box.replaceChildren(...(groups.length ? groups.map(folder) : [h('p', { class: 'empty' }, st.q ? 'לא נמצאו מסמכים לפי החיפוש.' : st.tab === 'done' ? 'אין מסמכים של בקשות שטופלו.' : 'אין מסמכים של בקשות פתוחות. מסמכים מצורפים מתוך עמוד הבקשה.')]));
       try { history.replaceState(null, '', '#/documents?tab=' + st.tab); } catch { /* */ }
-      if (shell) for (const a of shell.nav.querySelectorAll('a')) { if (a.dataset.href === '#/documents?tab=' + st.tab) a.setAttribute('aria-current', 'page'); else if (a.dataset.href.startsWith('#/documents')) a.removeAttribute('aria-current'); }
     }
     const search = h('input', { type: 'search', id: 'dsearch', maxlength: 100, autocomplete: 'off' });
     fitPlaceholder(search, ['שם קובץ, מספר בקשה או נושא', 'קובץ, מספר בקשה או נושא', 'קובץ או מספר בקשה', 'חיפוש']);
@@ -1515,7 +1681,7 @@
     main.replaceChildren(pageHead('מסמכים', (ownOnly ? 'המסמכים שהעלית. ' : '') + 'כל בקשה היא תיקייה. לחיצה על התיקייה פותחת או סוגרת אותה.', null,
       h('button', { class: 'btn', type: 'button', onclick: () => toggleAll(true) }, icon('folderOpen'), 'פתיחת הכל'),
       h('button', { class: 'btn', type: 'button', onclick: () => toggleAll(false) }, icon('folder'), 'סגירת הכל')),
-      h('div', { class: 'toolbar' }, h('div', { class: 'field grow' }, h('label', { for: 'dsearch' }, 'חיפוש'), search)), tabs, live, box);
+      tabs, h('div', { class: 'toolbar' }, h('div', { class: 'field grow' }, h('label', { for: 'dsearch' }, 'חיפוש'), search)), live, box);
   }
 
   // ---------- משימות ----------

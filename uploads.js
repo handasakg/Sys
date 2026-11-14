@@ -4,6 +4,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const config = require('./config');
 const { getSetting } = require('./db');
 const { HttpError } = require('./security');
@@ -125,11 +126,31 @@ function checkFile(filename, data, allowed, label = 'הקובץ') {
   if (looksDangerous(data) || (sig && !sig(data))) throw new HttpError(415, `${label}: תוכן הקובץ אינו תואם לסוג הקובץ`);
   return { original, ext, mime: MIME[ext] || 'application/octet-stream' };
 }
-function storeBuffer(data) {
-  const stored = crypto.randomBytes(24).toString('hex');
-  fs.writeFileSync(path.join(config.uploadDir, stored), data, { mode: 0o600, flag: 'wx' });
-  return { stored, size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex') };
+// כיווץ אוטומטי: כל קובץ נשמר בשרת (ובענן) מכווץ, כשהכיווץ חוסך מקום. בצפייה ובהורדה הוא נפרס בחזרה – המשתמש מקבל את הקובץ המקורי בדיוק.
+// קובץ מכווץ מתחיל בכותרת קבועה; קבצים ישנים (בלי הכותרת) נקראים כמו שהם.
+const PACK_MAGIC = Buffer.from([0x00, 0x48, 0x43, 0x5a, 0x01, 0x67, 0x7a, 0x00]); // \0HCZ\1gz\0
+const MAX_UNPACKED = 200 * 1024 * 1024;
+function pack(data) {
+  // קבצים שכבר דחוסים (JPG, PNG, ZIP, DWF וכו') כמעט לא מתכווצים – אז שומרים כמו שהם
+  const gz = zlib.gzipSync(data, { level: 9 });
+  return gz.length + PACK_MAGIC.length < data.length * 0.95 ? Buffer.concat([PACK_MAGIC, gz]) : data;
 }
+const isPacked = (buf) => buf.length > PACK_MAGIC.length && buf.subarray(0, PACK_MAGIC.length).equals(PACK_MAGIC);
+function unpack(buf) {
+  return isPacked(buf) ? zlib.gunzipSync(buf.subarray(PACK_MAGIC.length), { maxOutputLength: MAX_UNPACKED }) : buf;
+}
+// התוכן המקורי של קובץ שמור
+function readStored(stored) { return unpack(fs.readFileSync(storedPath(stored))); }
+// הבתים כפי שנשמרו בדיסק (מכווצים) – לגיבוי בענן
+function rawStored(stored) { return fs.readFileSync(storedPath(stored)); }
+function writeStored(data) {
+  const stored = crypto.randomBytes(24).toString('hex');
+  const packed = pack(data);
+  fs.writeFileSync(path.join(config.uploadDir, stored), packed, { mode: 0o600, flag: 'wx' });
+  // size ו-sha256 הם של הקובץ המקורי
+  return { stored, size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex'), stored_size: packed.length };
+}
+function storeBuffer(data) { return writeStored(data); }
 
 async function handleUpload(req) {
   const { fields, file } = await parseMultipart(req);
@@ -143,10 +164,8 @@ async function handleUpload(req) {
   if (file.data.length > maxBytes()) throw new HttpError(413, 'הקובץ גדול מהמותר');
   const sig = SIGNATURES[ext];
   if (looksDangerous(file.data) || (sig && !sig(file.data))) throw new HttpError(415, 'תוכן הקובץ אינו תואם לסוג הקובץ');
-  const stored = crypto.randomBytes(24).toString('hex');
-  const sha = crypto.createHash('sha256').update(file.data).digest('hex');
-  fs.writeFileSync(path.join(config.uploadDir, stored), file.data, { mode: 0o600, flag: 'wx' });
-  return { fields, original, stored, size: file.data.length, sha256: sha, mime: MIME[ext] || 'application/octet-stream', ext };
+  const st = writeStored(file.data);
+  return { fields, original, stored: st.stored, size: st.size, sha256: st.sha256, stored_size: st.stored_size, mime: MIME[ext] || 'application/octet-stream', ext };
 }
 
 function storedPath(stored) {
@@ -154,4 +173,4 @@ function storedPath(stored) {
   return path.join(config.uploadDir, stored);
 }
 
-module.exports = { handleUpload, storedPath, allowedExt, maxBytes, FORBIDDEN_EXT, MIME, readBody, parseMultipart, SIGNATURES, checkFile, storeBuffer };
+module.exports = { handleUpload, storedPath, readStored, rawStored, pack, unpack, isPacked, allowedExt, maxBytes, FORBIDDEN_EXT, MIME, readBody, parseMultipart, SIGNATURES, checkFile, storeBuffer };

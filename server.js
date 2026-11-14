@@ -16,9 +16,11 @@ const PUBLIC = config.ROOT;
 // קוד השרת, .env, מסד הנתונים, הגיבויים והבדיקות לעולם לא נגישים מהרשת.
 const PUBLIC_FILES = new Set(['index.html', 'app.js', 'app.css', 'app.min.js', 'app.min.css', 'favicon.svg', 'og-image.png', 'logo.png', 'sw.js',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon-32.png',
-  'manifest.webmanifest', 'robots.txt', 'sitemap.xml', 'privacy.html', 'accessibility.html', '404.html', 'map.html', 'map.js', 'map.css']);
+  'manifest.webmanifest', 'robots.txt', 'sitemap.xml', 'privacy.html', 'accessibility.html', '404.html', 'map.html', 'map.js', 'map.css',
+  // pdf.js (Mozilla, רישיון Apache-2.0) – הצגת PDF בתוך המערכת בכל דפדפן, גם בנייד
+  'pdfjs.mjs', 'pdfjs-worker.mjs', 'pdfjs-LICENSE.txt']);
 const STATIC_TYPES = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8',
   '.xml': 'application/xml; charset=utf-8', '.webmanifest': 'application/manifest+json', '.woff2': 'font/woff2',
 };
@@ -44,7 +46,7 @@ function originAllowed(req, origin) {
 }
 
 // ---------- קבצים סטטיים: דחיסה, גרסאות ומטמון ----------
-const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.txt', '.xml', '.webmanifest', '.json']);
+const COMPRESSIBLE = new Set(['.html', '.js', '.mjs', '.css', '.svg', '.txt', '.xml', '.webmanifest', '.json']);
 const staticCache = new Map();
 function loadStatic(file) {
   const st = fs.statSync(file);
@@ -254,6 +256,18 @@ function start() {
     if (process.env.DISABLE_REMINDERS !== '1') {
       const remind = () => { try { require('./routes').runReminders(); } catch (e) { console.error('[reminders]', e.message); } };
       setTimeout(remind, 60_000).unref(); setInterval(remind, 3_600_000).unref();
+    }
+    // שמירה על השרת ער: בשרת החינמי של Render השירות "נרדם" אחרי 15 דקות בלי כניסות, ואז הכניסה הבאה
+    // מציגה מסך שחור של Render עד שהשרת עולה (כחצי דקה עד דקה). פנייה קצרה לכתובת הציבורית כל 10 דקות
+    // נחשבת כניסה, כך שהשירות לא נרדם והאתר עולה מיד. כיבוי: KEEP_ALIVE=0
+    const aliveBase = (process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+    if (process.env.KEEP_ALIVE !== '0' && /^https:\/\/[^\s/]+$/.test(aliveBase)) {
+      const ping = async () => {
+        try { const r = await fetch(aliveBase + '/api/health', { headers: { 'User-Agent': 'handasa-keepalive' }, signal: AbortSignal.timeout(20_000) }); await r.arrayBuffer(); }
+        catch (e) { console.warn('[keep-alive]', e.message); }
+      };
+      setTimeout(ping, 90_000).unref(); setInterval(ping, 10 * 60_000).unref();
+      console.log('[keep-alive] פעיל: ' + aliveBase);
     }
     // כיבוי מסודר (Render שולח SIGTERM לפני כיבוי): שמירה אחרונה לענן
     let stopping = false;

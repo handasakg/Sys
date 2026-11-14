@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const zlibT = require('node:zlib');
+const unpackStored = (b) => (b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x00, 0x48, 0x43, 0x5a, 0x01, 0x67, 0x7a, 0x00])) ? zlibT.gunzipSync(b.subarray(8)) : b);
+
 
 const ROOT = __dirname;
 const results = [];
@@ -36,7 +39,7 @@ function seedReq(db, applicantId, f = {}) {
 }
 const TEST_POLICE = { applicant_name: 'בודק מערכת', project: 'פרויקט בדיקה', id_kind: 'id', id_number: '000000018', phone: '050-1234567', description: 'עבודת בדיקה', work_time: 'א׳-ה׳', work_hours: '07:00-16:00', contact_name: 'בודק שטח', contact_phone: '052-7654321', notes: '', date: '2026-12-01' };
 let applySeq = 0;
-async function applyPublic(baseUrl, over = {}) {
+async function applyPublic(baseUrl, over = {}, ip) {
   const meta = await new Client(baseUrl).req('GET', '/api/public/apply-meta');
   const fd = new FormData(); applySeq++;
   const f = { kind: 'resident', username: `מגיש ${applySeq}${crypto.randomBytes(2).toString('hex')}`, password: 'Ap' + crypto.randomBytes(8).toString('hex') + '9', type: meta.data.types[0].key,
@@ -44,7 +47,8 @@ async function applyPublic(baseUrl, over = {}) {
   for (const [k, val] of Object.entries(f)) fd.append(k, val);
   const pdfB = Buffer.from('%PDF-1.4\n% test\n%%EOF');
   fd.append('route_plan', new Blob([pdfB]), 'plan.pdf'); fd.append('work_request', new Blob([pdfB]), 'request.pdf');
-  const c = new Client(baseUrl); const r = await c.req('POST', '/api/public/apply', fd); if (r.data && r.data.csrf) c.csrf = r.data.csrf;
+  for (const k of Object.keys(over)) if (over[k] === undefined) fd.delete(k);
+  const c = new Client(baseUrl); const r = await c.req('POST', '/api/public/apply', fd, ip ? { headers: { 'X-Forwarded-For': ip } } : undefined); if (r.data && r.data.csrf) c.csrf = r.data.csrf;
   return { status: r.status, id: r.data && r.data.id, number: r.data && r.data.number, client: c, error: r.data && r.data.error };
 }
 
@@ -269,7 +273,7 @@ class Client {
     r = await admin.req('POST', `/api/requests/${reqId}/status`, { status: 'closed' });
     rec('אישור מנהל', 'אישור מנהל המערכת מסיים את הבקשה – אין שלב סגירה נוסף', fin.status === 'approved' && !!fin.closed_at && r.status === 400);
     const apDoc = db.prepare("SELECT * FROM documents WHERE request_id = ? AND category = 'אישור לביצוע עבודה'").get(reqId);
-    const apBuf = apDoc ? fs.readFileSync(path.join(dataDir, 'uploads', apDoc.stored_name)) : Buffer.alloc(0);
+    const apBuf = apDoc ? unpackStored(fs.readFileSync(path.join(dataDir, 'uploads', apDoc.stored_name))) : Buffer.alloc(0);
     rec('מסמך אישור', 'באישור הסופי הופק מסמך PDF לבקשה, משותף לכל המעורבים', !!apDoc && apDoc.visibility === 'shared' && apBuf.subarray(0, 5).toString() === '%PDF-');
     const apView = await A.req('GET', `/api/requests/${reqId}`);
     const apDl = await A.req('GET', `/api/documents/${apDoc.id}/download`, undefined, { raw: true });
@@ -341,6 +345,26 @@ class Client {
       const n1 = (await applyPublic(base)).number;
       const n2 = await applyPublic(base); n2Id = n2.id;
       rec('מספור בקשות', 'הגדרת קידומת, ספרות ומספר התחלה: BD-050 ואז BD-051', n1 === 'BD-050' && n2.number === 'BD-051', `${n1}, ${n2.number}`);
+      // הגשה עם משתמש קיים: שם המשתמש והסיסמה הם התחברות – לא נפתח משתמש חדש
+      {
+        const uname = `קיים ${crypto.randomBytes(2).toString('hex')}`; const upw = 'Ex' + crypto.randomBytes(8).toString('hex') + '7';
+        const first = await applyPublic(base, { username: uname, password: upw }, '10.77.0.1');
+        const owner = db.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(first.id).applicant_id;
+        const usersBefore = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+        const again = await applyPublic(base, { existing: '1', username: uname, password: upw, email: undefined, phone: undefined, address: undefined }, '10.77.0.2');
+        const usersAfter = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+        const owner2 = again.id ? db.prepare('SELECT applicant_id FROM requests WHERE id = ?').get(again.id).applicant_id : null;
+        const me2 = again.client ? await again.client.req('GET', '/api/auth/me') : null;
+        rec('הגשה עם משתמש קיים', 'מסמנים "יש לי כבר משתמש": הבקשה נוספת למשתמש הקיים, בלי לפתוח משתמש חדש, וההגשה מחברת אותו', first.status === 201 && again.status === 201 && owner2 === owner && usersAfter === usersBefore && me2.status === 200 && me2.data.user.id === owner, `${again.status} ${again.error || ''} users ${usersBefore}→${usersAfter}`);
+        const reqsBefore = db.prepare('SELECT COUNT(*) AS c FROM requests').get().c;
+        const bad = await applyPublic(base, { existing: '1', username: uname, password: upw + 'x', email: undefined, phone: undefined, address: undefined }, '10.77.0.3');
+        const reqsAfter = db.prepare('SELECT COUNT(*) AS c FROM requests').get().c;
+        rec('הגשה עם משתמש קיים', 'סיסמה שגויה – ההגשה נחסמת (401), לא נוצרת בקשה ולא משתמש', bad.status === 401 && reqsAfter === reqsBefore, `${bad.status} ${bad.error}`);
+        const staff = await applyPublic(base, { existing: '1', username: 'eng', password: users.eng.p, email: undefined, phone: undefined, address: undefined }, '10.77.0.4');
+        rec('הגשה עם משתמש קיים', 'משתמש צוות (בעל הרשאה) לא יכול להגיש דרך הטופס הציבורי', staff.status === 400 && /משתמש צוות/.test(staff.error || ''), staff.error);
+        const dup = await applyPublic(base, { username: uname }, '10.77.0.5');
+        rec('הגשה עם משתמש קיים', 'בלי הסימון – שם משתמש תפוס נדחה עם הסבר לסמן "יש לי כבר משתמש"', dup.status === 400 && /יש לי כבר שם משתמש/.test(dup.error || ''), dup.error);
+      }
       r = await admin.req('PUT', '/api/admin/settings', { req_prefix: '<script>' });
       rec('מספור בקשות', 'קידומת עם תווים לא חוקיים נדחית', r.status === 400);
       r = await E2.req('POST', `/api/requests/${n2.id}/number`, { number: n1 });
@@ -478,6 +502,17 @@ class Client {
     rec('העלאת קבצים', 'הורדה כ-attachment עם nosniff ו-CSP sandbox', /attachment/.test(dl.headers.get('content-disposition')) && dl.headers.get('x-content-type-options') === 'nosniff' && /sandbox/.test(dl.headers.get('content-security-policy')));
     r = await users.applB.c.req('GET', `/api/documents/${up.ok.data.id}/download`);
     rec('העלאת קבצים', 'משתמש לא מורשה לא יכול להוריד קובץ של אחר', r.status === 404);
+    // כיווץ אוטומטי: הקובץ נשמר מכווץ בדיסק, ובהורדה ובצפייה מתקבל הקובץ המקורי בדיוק
+    const bigPdf = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('BT /F1 12 Tf (שורת טקסט שחוזרת על עצמה בתוכנית) Tj ET\n'.repeat(4000)), Buffer.from('%%EOF')]);
+    const upz = await upload(A2, 'תוכנית גדולה.pdf', bigPdf);
+    const zdoc = upz.status === 201 ? db.prepare('SELECT * FROM documents WHERE id = ?').get(upz.data.id) : null;
+    const onDisk = zdoc ? fs.readFileSync(path.join(dataDir, 'uploads', zdoc.stored_name)) : Buffer.alloc(0);
+    const zdl = zdoc ? await A2.req('GET', `/api/documents/${zdoc.id}/download`, undefined, { raw: true }) : null;
+    const zdlBuf = zdl ? Buffer.from(await zdl.arrayBuffer()) : Buffer.alloc(0);
+    const zvw = zdoc ? await A2.req('GET', `/api/documents/${zdoc.id}/view`, undefined, { raw: true }) : null;
+    const zvwBuf = zvw ? Buffer.from(await zvw.arrayBuffer()) : Buffer.alloc(0);
+    rec('כיווץ קבצים', 'קובץ שמועלה נשמר בשרת מכווץ (קטן בהרבה מהמקור)', onDisk.length > 0 && onDisk.length < bigPdf.length / 5 && onDisk[1] === 0x48 && zdoc.size === bigPdf.length, `${bigPdf.length} → ${onDisk.length} בתים`);
+    rec('כיווץ קבצים', 'הורדה וצפייה מחזירות את הקובץ המקורי בדיוק', zdl && zdl.status === 200 && zdlBuf.equals(bigPdf) && Number(zdl.headers.get('content-length')) === bigPdf.length && zvw.status === 200 && zvwBuf.equals(bigPdf));
     // ניהול סוגי קבצים מלוח הבקרה
     r = await admin.req('PUT', '/api/admin/settings', { allowed_ext: ['pdf', 'svg'] });
     const r3 = await admin.req('PUT', '/api/admin/settings', { allowed_ext: ['pdf', 'html'] });
@@ -947,6 +982,14 @@ class Client {
       const am = mails.find(m => m.to === 'israel@example.com');
       const amText = am ? am.body + Buffer.from((am.body.split(/\n\n/).slice(1).join('\n\n').match(/[A-Za-z0-9+/=\n]{40,}/) || [''])[0].replace(/\s+/g, ''), 'base64').toString('utf8') : '';
       rec('החזרה לתיקון', 'החזרה למגיש: המגיש מקבל אימייל עם הסיבה וקישור לכניסה', r.status === 200 && /יש לצרף תוכנית חתומה/.test(amText) && new RegExp(`/#/requests/${sr.id}`).test(amText));
+      // דחייה: המגיש מקבל אימייל עם הסיבה והנחיה להגיש בקשה חדשה עם השלמת הפרטים
+      const sj = seedReq(db5, applId5, { status: 'submitted', title: 'בקשה לדחייה' });
+      mails.length = 0;
+      r = await ad.req('POST', `/api/requests/${sj.id}/status`, { status: 'rejected', comment: 'חסרה תוכנית הסדרי תנועה' });
+      await new Promise(res => setTimeout(res, 500));
+      const jm = mails.find(m => m.to === 'israel@example.com');
+      const jmText = jm ? jm.body + Buffer.from((jm.body.split(/\n\n/).slice(1).join('\n\n').match(/[A-Za-z0-9+/=\n]{40,}/) || [''])[0].replace(/\s+/g, ''), 'base64').toString('utf8') : '';
+      rec('דחיית בקשה', 'המגיש מקבל אימייל עם סיבת הדחייה והנחיה להגיש בקשה חדשה עם השלמת הפרטים', r.status === 200 && /חסרה תוכנית הסדרי תנועה/.test(jmText) && /להגיש בקשה חדשה עם השלמת הפרטים/.test(jmText) && new RegExp(`/#/requests/${sj.id}`).test(jmText), jm ? 'נשלח' : 'לא נשלח אימייל');
       mails.length = 0;
       r = await ad.req('POST', `/api/requests/${reqId5}/status`, { status: 'approved', comment: 'מאושר' });
       await new Promise(res => setTimeout(res, 800));
